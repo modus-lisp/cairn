@@ -2,20 +2,20 @@
 
 (asdf:defsystem :cairn
   :description "A clean-room git in pure Common Lisp: the object model, loose and
-packed object stores, refs, the index, and pack transfer.  Its own SHA-1 and
-DEFLATE.  No libgit2, no shelling out to git, no FFI."
+packed object stores, refs, the index, and pack transfer.  SHA-1 comes from the
+sibling `seal` (the classical-crypto home), DEFLATE from `chipz` (pure-CL
+inflate) — no libgit2, no shelling out to git, no FFI."
   :version "0.0.1"
   :author "ynniv"
   :license "MIT"
-  :depends-on ()
+  :depends-on ("seal" "chipz")
   :serial t
   :components
   ((:module "src"
     :serial t
     :components
     ((:file "packages")
-     (:file "sha1")
-     (:file "inflate")
+     (:file "util")
      (:file "objects")
      (:file "refs")
      (:file "pack")
