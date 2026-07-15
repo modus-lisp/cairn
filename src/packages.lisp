@@ -22,4 +22,6 @@
    ;; refs
    #:resolve-ref #:head-commit #:list-refs #:ref-target
    ;; plumbing / porcelain
-   #:cat-file #:cat-file-string #:log-commits #:ls-tree #:rev-parse))
+   #:cat-file #:cat-file-string #:log-commits #:ls-tree #:rev-parse
+   ;; transport (smart HTTP over seal)
+   #:clone #:discover-refs #:fetch-pack #:index-pack))

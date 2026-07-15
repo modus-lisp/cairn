@@ -1,6 +1,6 @@
 (require :asdf)
-(dolist (f '("packages" "sha1" "inflate" "objects" "refs" "repository" "plumbing"))
-  (load (compile-file (format nil "/home/claude/cairn/src/~a.lisp" f) :verbose nil :print nil)))
+(handler-bind ((warning #'muffle-warning))
+  (let ((*standard-output* (make-broadcast-stream))) (asdf:load-system :cairn)))
 (in-package :cairn)
 (let ((repo (open-repository "/tmp/gittest")))
   (format t "~&HEAD = ~a~%~%=== cairn log ===~%" (head-commit repo))

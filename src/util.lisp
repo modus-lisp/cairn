@@ -41,6 +41,28 @@
    stops at the stream's end, so no explicit length is needed."
   (chipz:decompress nil 'chipz:zlib data :input-start start))
 
+;;; --- CRC-32 (IEEE, for packfile .idx v2) ---------------------------------
+
+(defparameter *crc32-table*
+  (let ((tbl (make-array 256 :element-type '(unsigned-byte 32))))
+    (dotimes (n 256 tbl)
+      (let ((c n))
+        (dotimes (_ 8)
+          (setf c (if (logtest c 1)
+                      (logxor #xedb88320 (ash c -1))
+                      (ash c -1))))
+        (setf (aref tbl n) c))))
+  "CRC-32 lookup table (reflected polynomial #xEDB88320).")
+
+(defun crc32 (bytes &optional (start 0) (end (length bytes)))
+  "IEEE CRC-32 of BYTES[START:END] — the checksum git records per object in a
+   packfile index."
+  (let ((c #xffffffff))
+    (loop for i from start below end do
+      (setf c (logxor (ash c -8)
+                      (aref *crc32-table* (logand (logxor c (aref bytes i)) #xff)))))
+    (logxor c #xffffffff)))
+
 ;;; The compress side arrives with cairn's write path (salza2, chipz's sibling).
 (defun deflate (bytes)
   (declare (ignore bytes)) (error "cairn: deflate (write side) not yet implemented"))

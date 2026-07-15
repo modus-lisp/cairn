@@ -1,0 +1,119 @@
+;;;; clone.lisp — fetching a repository over git's smart HTTP protocol.
+;;;;
+;;;; Two round-trips.  First a GET of info/refs advertises the remote's refs and
+;;;; capabilities.  Then a POST names the commits we `want` and says `done`; the
+;;;; server answers with a packfile of every object reachable from those wants.
+;;;; We index that pack (index-pack.lisp) and lay down a .git — HEAD, the refs,
+;;;; a config — and the repository is clonable by, and readable as, real git.
+
+(in-package #:cairn)
+
+(defun smart-http-base (url)
+  "Normalise a clone URL to its smart-HTTP base (adding .git if missing)."
+  (let ((u (string-right-trim "/" url)))
+    (if (search ".git" u) u (concatenate 'string u ".git"))))
+
+(defun discover-refs (base)
+  "GET BASE/info/refs?service=git-upload-pack.  Returns (values REFS CAPS
+   HEAD-TARGET), REFS an alist of (refname . sha), CAPS the capability string,
+   HEAD-TARGET the symref HEAD points at (or NIL)."
+  (let* ((u (parse-url (format nil "~a/info/refs?service=git-upload-pack" base))))
+    (multiple-value-bind (code hdrs body)
+        (https-request "GET" (parsed-url-host u) (parsed-url-port u) (parsed-url-path u))
+      (declare (ignore hdrs))
+      (unless (= code 200) (error "cairn: info/refs returned HTTP ~d" code))
+      (let ((pos 0) (refs '()) (caps "") (head-target nil) (first t))
+        ;; leading "# service=..." comment pkt, then a flush
+        (multiple-value-bind (p np kind) (read-pktline body pos)
+          (declare (ignore p))
+          (setf pos np)
+          (when (eq kind :data)                          ; skip the trailing flush
+            (multiple-value-setq (p np kind) (read-pktline body pos))
+            (setf pos np)))
+        (loop
+          (multiple-value-bind (payload np kind) (read-pktline body pos)
+            (setf pos np)
+            (when (member kind '(:flush :response-end)) (return))
+            (when (eq kind :data)
+              (let* ((line (pktline-payload-string payload))
+                     (nul (position #\Nul line)))
+                (when (and first nul)                    ; caps ride the first ref line
+                  (setf caps (subseq line (1+ nul)) line (subseq line 0 nul))
+                  (let ((s (search "symref=HEAD:" caps)))
+                    (when s
+                      (let* ((start (+ s (length "symref=HEAD:")))
+                             (end (position #\Space caps :start start)))
+                        (setf head-target (subseq caps start end))))))
+                (setf first nil)
+                (let ((sp (position #\Space line)))
+                  (push (cons (subseq line (1+ sp)) (subseq line 0 sp)) refs))))))
+        (values (nreverse refs) caps head-target)))))
+
+(defun fetch-pack (base wants)
+  "POST BASE/git-upload-pack with WANTS (a list of SHA hex strings) and receive
+   the packfile bytes."
+  (let* ((u (parse-url (format nil "~a/git-upload-pack" base)))
+         (body (let ((out (make-array 256 :element-type '(unsigned-byte 8)
+                                           :adjustable t :fill-pointer 0)))
+                 (loop for sha in wants for firstp = t then nil
+                       for line = (if firstp
+                                      (format nil "want ~a ofs-delta agent=cairn/0.1~%" sha)
+                                      (format nil "want ~a~%" sha))
+                       do (loop for b across (pktline line) do (vector-push-extend b out)))
+                 (loop for b across +flush-pkt+ do (vector-push-extend b out))
+                 (loop for b across (pktline (format nil "done~%")) do (vector-push-extend b out))
+                 (coerce out '(simple-array (unsigned-byte 8) (*))))))
+    (multiple-value-bind (code hdrs resp)
+        (https-request "POST" (parsed-url-host u) (parsed-url-port u) (parsed-url-path u)
+                       :headers (list (cons "Content-Type" "application/x-git-upload-pack-request"))
+                       :body body)
+      (declare (ignore hdrs))
+      (unless (= code 200) (error "cairn: git-upload-pack returned HTTP ~d" code))
+      ;; response is one or more pkt-lines (NAK/ACK) then the raw packfile
+      (let ((start (search #(#x50 #x41 #x43 #x4b) resp)))   ; "PACK"
+        (unless start (error "cairn: no packfile in upload-pack response"))
+        (subseq resp start)))))
+
+(defun write-text-file (path text)
+  (ensure-directories-exist path)
+  (with-open-file (s path :direction :output :if-exists :supersede
+                          :if-does-not-exist :create :external-format :utf-8)
+    (write-string text s))
+  path)
+
+(defun clone (url dest)
+  "Clone the remote git repository at URL (https) into directory DEST.  Fetches
+   and indexes the packfile and writes a real .git; returns the open repository."
+  (let* ((base (smart-http-base url))
+         (dest (uiop:ensure-directory-pathname dest))
+         (git-dir (merge-pathnames ".git/" dest)))
+    (multiple-value-bind (refs caps head-target) (discover-refs base)
+      (declare (ignore caps))
+      (let* ((wants (remove-duplicates
+                     (loop for (name . sha) in refs
+                           unless (or (string= name "HEAD")
+                                      (and (> (length name) 3)
+                                           (string= name "^{}" :start1 (- (length name) 3))))
+                             collect sha)
+                     :test #'string=))
+             (head-target (or head-target
+                              (car (find-if (lambda (r) (search "refs/heads/" (car r))) refs))
+                              "refs/heads/master")))
+        (format t "~&remote: ~d refs, fetching ~d wanted commits…~%" (length refs) (length wants))
+        (let ((pack (fetch-pack base wants)))
+          (format t "received packfile: ~d bytes~%" (length pack))
+          ;; lay down the .git
+          (write-text-file (merge-pathnames "HEAD" git-dir)
+                           (format nil "ref: ~a~%" head-target))
+          (write-text-file (merge-pathnames "config" git-dir)
+                           (format nil "[core]~%	repositoryformatversion = 0~%	bare = false~%~
+                                        [remote \"origin\"]~%	url = ~a~%" url))
+          (loop for (name . sha) in refs
+                unless (or (string= name "HEAD")
+                           (and (> (length name) 3)
+                                (string= name "^{}" :start1 (- (length name) 3))))
+                  do (write-text-file (merge-pathnames name git-dir) (format nil "~a~%" sha)))
+          (multiple-value-bind (pack-name count)
+              (index-pack pack (merge-pathnames "objects/pack/" git-dir))
+            (format t "indexed ~a: ~d objects~%" pack-name count))
+          (open-repository dest))))))
