@@ -80,7 +80,9 @@ agrees — the strongest test available:
 - **Merge** matches git: a clean three-way merge produces a tree byte-identical
   to `git merge`'s (same two parents); a conflict produces identical
   `<<<<<<<`/`=======`/`>>>>>>>` markers and an unmerged index (stages 1/2/3) that
-  `git status` reads as `UU`. **Pull** is fetch + merge — a divergent pull
+  `git status` reads as `UU`. On a criss-cross history it finds the same set of
+  merge bases as `git merge-base --all` and recursively merges them — a clean
+  recursive merge is byte-identical to git's. **Pull** is fetch + merge — a divergent pull
   three-way-merges (tree byte-identical to a pure-git reproduction) or leaves
   git-identical conflict markers labelled `origin/<branch>`.
 
@@ -105,11 +107,14 @@ each library built so the next could exist.
 
 ## Not yet
 
-`merge` (and so `pull`) finds a single merge base — the recursive merge of
-multiple bases (criss-cross histories) is future work. Also: HTTP push (needs
-credential auth; SSH push works), delta compression in *written* packs (they're
-correct but larger than git's), SHA-256 repositories, the commit-graph, and
-shallow/partial clone. Contributions welcome.
+HTTP push (needs credential auth; SSH push works), delta compression in
+*written* packs (they're correct but larger than git's), SHA-256 repositories,
+the commit-graph, and shallow/partial clone. Contributions welcome.
+
+`merge` is recursive over multiple merge bases (criss-cross histories); a clean
+recursive merge is byte-identical to git's, though the exact *conflict-hunk*
+layout of a recursive conflict can differ from git's xdiff (both flag the same
+regions).
 
 The conflict resolver is a single seam — bind `*merge-resolver*` to change how
 regions both sides edited are reconciled (the default reproduces git's markers).

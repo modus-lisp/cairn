@@ -16,33 +16,55 @@
 
 (in-package #:cairn)
 
-;;; ---- merge base -------------------------------------------------------------
+;;; ---- merge base(s) ----------------------------------------------------------
+;;;
+;;; When two branches criss-cross, they can share *several* best common
+;;; ancestors — the merge base is not unique.  Picking one arbitrarily can
+;;; silently drop a divergent resolution.  git's answer (the "recursive"
+;;; strategy) is to merge the bases with each other first, producing one virtual
+;;; ancestor tree to merge ours/theirs against.  Merging bases is itself a merge,
+;;; so the whole thing recurses, and a base may be a *virtual* commit (a vnode).
 
-(defun ancestors-set (repo commit)
-  "Hash-set of COMMIT and all its ancestors."
-  (let ((seen (make-hash-table :test 'equal)) (queue (list commit)))
-    (loop while queue do
-      (let ((c (pop queue)))
-        (unless (gethash c seen)
-          (setf (gethash c seen) t)
-          (handler-case
-              (dolist (p (commit-parents (parse-commit (object-data repo c)))) (push p queue))
-            (error () nil)))))
+(defstruct (vnode (:constructor make-vnode (tree parents id))) tree parents id)
+
+(defun cnode-id (c) (if (vnode-p c) (vnode-id c) c))
+(defun cnode-tree (repo c)
+  (if (vnode-p c) (vnode-tree c) (commit-tree (parse-commit (object-data repo c)))))
+(defun cnode-parents (repo c)
+  (if (vnode-p c) (vnode-parents c)
+      (handler-case (commit-parents (parse-commit (object-data repo c))) (error () nil))))
+
+(defun cnode-ancestors (repo c)
+  "id -> cnode for C and all of its ancestors."
+  (let ((seen (make-hash-table :test 'equal)) (q (list c)))
+    (loop while q do
+      (let ((x (pop q)))
+        (unless (nth-value 1 (gethash (cnode-id x) seen))
+          (setf (gethash (cnode-id x) seen) x)
+          (dolist (p (cnode-parents repo x)) (push p q)))))
     seen))
 
+(defun all-merge-bases (repo a b)
+  "The maximal common ancestors (best merge bases) of cnodes A and B — the
+   common ancestors that are not themselves ancestors of another common one."
+  (let ((anc-a (cnode-ancestors repo a)) (anc-b (cnode-ancestors repo b))
+        (common (make-hash-table :test 'equal)) (redundant (make-hash-table :test 'equal))
+        (result '()))
+    (maphash (lambda (id c) (when (nth-value 1 (gethash id anc-b)) (setf (gethash id common) c))) anc-a)
+    ;; a common node that is a *proper* ancestor of another common node is redundant
+    (maphash (lambda (id c)
+               (declare (ignore id))
+               (dolist (p (cnode-parents repo c))
+                 (maphash (lambda (aid ac) (declare (ignore ac))
+                            (when (nth-value 1 (gethash aid common)) (setf (gethash aid redundant) t)))
+                          (cnode-ancestors repo p))))
+             common)
+    (maphash (lambda (id c) (unless (nth-value 1 (gethash id redundant)) (push c result))) common)
+    result))
+
 (defun merge-base (repo a b)
-  "A best common ancestor of commits A and B (nearest to B), or NIL.  A simple
-   lowest-common-ancestor; multiple-base recursive merge is left for later."
-  (let ((anc-a (ancestors-set repo a)) (seen (make-hash-table :test 'equal)) (queue (list b)))
-    (loop while queue do
-      (let ((c (pop queue)))
-        (when (gethash c anc-a) (return-from merge-base c))
-        (unless (gethash c seen)
-          (setf (gethash c seen) t)
-          (handler-case
-              (dolist (p (commit-parents (parse-commit (object-data repo c)))) (setf queue (append queue (list p))))
-            (error () nil)))))
-    nil))
+  "One best merge base of commits A and B (a sha), or NIL."
+  (let ((bs (all-merge-bases repo a b))) (and bs (cnode-id (first bs)))))
 
 ;;; ---- three-way content merge (diff3) ----------------------------------------
 
@@ -152,6 +174,27 @@
              result)
     (build-tree repo entries "")))
 
+;;; ---- recursive base folding -------------------------------------------------
+
+(defvar *vnode-id* 0)
+
+(defun merge-two (repo a b)
+  "Recursively merge cnodes A and B into a virtual commit (vnode) whose tree is
+   their three-way merge (conflicts baked into the content, as git does for a
+   virtual ancestor)."
+  (let* ((bases (all-merge-bases repo a b))
+         (base-tree (virtual-base-tree repo bases))
+         (result (merge-flat-trees repo base-tree (cnode-tree repo a) (cnode-tree repo b))))
+    (make-vnode (write-tree-from-map repo result) (list a b) (format nil "v~d" (incf *vnode-id*)))))
+
+(defun virtual-base-tree (repo bases)
+  "Fold the merge BASES (cnodes) into a single virtual-ancestor TREE sha: no
+   bases -> the empty tree; one -> its tree; several -> merge them together."
+  (cond ((null bases) (write-tree-from-map repo (make-hash-table :test 'equal)))
+        ((null (cdr bases)) (cnode-tree repo (first bases)))
+        (t (cnode-tree repo (reduce (lambda (acc b) (merge-two repo acc b))
+                                    (rest bases) :initial-value (first bases))))))
+
 ;;; ---- driver -----------------------------------------------------------------
 
 (defun current-branch-name (repo)
@@ -210,27 +253,30 @@
 
 (defun merge (repo commitish &key message (author "cairn <cairn@localhost>") (committer author)
                                   (theirs-label commitish))
-  "Merge COMMITISH into the current branch (canonical three-way).  Fast-forwards
-   when possible; on a clean merge writes a two-parent merge commit and checks it
-   out; on conflicts writes markered files + index stages + MERGE_HEAD and
-   returns (values :conflicts PATHS).  Conflict handling is *merge-resolver*."
+  "Merge COMMITISH into the current branch (canonical three-way, recursive over
+   multiple merge bases).  Fast-forwards when possible; on a clean merge writes a
+   two-parent merge commit and checks it out; on conflicts writes markered files
+   + index stages + MERGE_HEAD and returns (values :conflicts PATHS).  Conflict
+   handling is *merge-resolver*."
   (let* ((theirs (rev-parse repo commitish))
          (ours (head-commit repo))
-         (base (merge-base repo ours theirs))
          (*merge-theirs-label* theirs-label))
     (cond
       ((string= ours theirs) (format t "~&Already up to date.~%") :up-to-date)
-      ((and base (string= base theirs)) (format t "~&Already up to date.~%") :up-to-date)
-      ((and base (string= base ours))
+      ((ancestor-p repo theirs ours) (format t "~&Already up to date.~%") :up-to-date)
+      ((ancestor-p repo ours theirs)
        (multiple-value-bind (kind ref) (head-ref repo)
          (when (eq kind :symbolic) (update-ref repo ref theirs)))
        (checkout repo theirs)
        (format t "~&Fast-forward to ~a~%" (short theirs))
        :fast-forward)
       (t
-       (let* ((ours-tree (commit-tree (parse-commit (object-data repo ours))))
-              (theirs-tree (commit-tree (parse-commit (object-data repo theirs))))
-              (base-tree (and base (commit-tree (parse-commit (object-data repo base))))))
+       (let* ((bases (all-merge-bases repo ours theirs))
+              (base-tree (virtual-base-tree repo bases))
+              (ours-tree (commit-tree (parse-commit (object-data repo ours))))
+              (theirs-tree (commit-tree (parse-commit (object-data repo theirs)))))
+         (when (cdr bases)
+           (format t "~&Merging ~d common ancestors (recursive)~%" (length bases)))
          (multiple-value-bind (result conflicts) (merge-flat-trees repo base-tree ours-tree theirs-tree)
            (if conflicts
                (finish-conflicted-merge repo result conflicts theirs theirs-label)

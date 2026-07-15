@@ -37,6 +37,6 @@
    #:clone-ssh #:push-ssh #:parse-ssh-url
    ;; fetch / pull
    #:fetch #:pull #:remote-url
-   ;; merge (three-way; conflict handling via *merge-resolver*)
-   #:merge #:merge-base #:diff3-merge #:*merge-resolver*
+   ;; merge (three-way, recursive; conflict handling via *merge-resolver*)
+   #:merge #:merge-base #:all-merge-bases #:diff3-merge #:*merge-resolver*
    #:*merge-ours-label* #:*merge-theirs-label*))
