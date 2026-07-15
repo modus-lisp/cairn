@@ -76,7 +76,9 @@ agrees — the strongest test available:
   `/dev/null` ranges, and all).
 - **Push** and **pull** round-trip through a real `git` server: after a push the
   remote's HEAD is cairn's commit and `git fsck` is clean; an incremental fetch
-  transfers only the new objects and fast-forwards cleanly.
+  transfers only the new objects and fast-forwards cleanly. The packs cairn
+  writes are **delta-compressed** (ofs-delta) — within a few percent of git's own
+  pack size, and `git verify-pack` resolves every delta.
 - **Merge** matches git: a clean three-way merge produces a tree byte-identical
   to `git merge`'s (same two parents); a conflict produces identical
   `<<<<<<<`/`=======`/`>>>>>>>` markers and an unmerged index (stages 1/2/3) that
@@ -107,9 +109,8 @@ each library built so the next could exist.
 
 ## Not yet
 
-HTTP push (needs credential auth; SSH push works), delta compression in
-*written* packs (they're correct but larger than git's), SHA-256 repositories,
-the commit-graph, and shallow/partial clone. Contributions welcome.
+HTTP push (needs credential auth; SSH push works), SHA-256 repositories, the
+commit-graph, and shallow/partial clone. Contributions welcome.
 
 `merge` is recursive over multiple merge bases (criss-cross histories); a clean
 recursive merge is byte-identical to git's, though the exact *conflict-hunk*
@@ -124,7 +125,8 @@ regions both sides edited are reconciled (the default reproduces git's markers).
 The `inspect/` scripts each load the system and check a layer against real `git`:
 `verify-objects.lisp` (read + re-hash any repo), `clone.lisp` (clone over HTTPS),
 `commit.lisp` (clone → edit → commit → `git fsck`), `status-diff.lisp` (next to
-`git status`/`git diff`), `merge.lisp` (clean + conflict merge vs `git merge`),
+`git status`/`git diff`), `merge.lisp` (clean + conflict + recursive merge vs `git merge`),
+`delta.lisp` (delta-compressed pack size vs git + `git verify-pack`),
 `ssh.lisp` (clone + push over a local `sshd`), and `fetch.lisp` (incremental
 fetch + fast-forward pull). The SSH scripts need a local `sshd`; setup is in each
 file's header comment.
