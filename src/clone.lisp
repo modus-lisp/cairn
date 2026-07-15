@@ -49,9 +49,10 @@
                   (push (cons (subseq line (1+ sp)) (subseq line 0 sp)) refs))))))
         (values (nreverse refs) caps head-target)))))
 
-(defun fetch-pack (base wants)
-  "POST BASE/git-upload-pack with WANTS (a list of SHA hex strings) and receive
-   the packfile bytes."
+(defun fetch-pack (base wants &optional haves)
+  "POST BASE/git-upload-pack with WANTS (SHA hex strings) — and, for an
+   incremental fetch, HAVES we already hold — and receive the packfile bytes.
+   With haves the server may return a thin pack."
   (let* ((u (parse-url (format nil "~a/git-upload-pack" base)))
          (body (let ((out (make-array 256 :element-type '(unsigned-byte 8)
                                            :adjustable t :fill-pointer 0)))
@@ -61,6 +62,9 @@
                                       (format nil "want ~a~%" sha))
                        do (loop for b across (pktline line) do (vector-push-extend b out)))
                  (loop for b across +flush-pkt+ do (vector-push-extend b out))
+                 (loop for sha in haves
+                       do (loop for b across (pktline (format nil "have ~a~%" sha))
+                                do (vector-push-extend b out)))
                  (loop for b across (pktline (format nil "done~%")) do (vector-push-extend b out))
                  (coerce out '(simple-array (unsigned-byte 8) (*))))))
     (multiple-value-bind (code hdrs resp)

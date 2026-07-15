@@ -70,12 +70,13 @@
 
 ;;; ---- fetch / clone ----------------------------------------------------------
 
-(defun send-wants (chan wants)
+(defun send-wants (chan wants &optional haves)
   (loop for sha in wants for firstp = t then nil
         do (conch:chan-write chan (pktline (if firstp
                                                (format nil "want ~a ofs-delta agent=cairn/0.1~%" sha)
                                                (format nil "want ~a~%" sha)))))
   (conch:chan-write chan +flush-pkt+)
+  (loop for sha in haves do (conch:chan-write chan (pktline (format nil "have ~a~%" sha))))
   (conch:chan-write chan (pktline (format nil "done~%"))))
 
 (defun clone-ssh (url dest &key identity (checkout t))

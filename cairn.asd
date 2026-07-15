@@ -33,4 +33,5 @@ libgit2, no libcurl, no shelling out to git, no FFI."
      (:file "pktline")
      (:file "http")
      (:file "clone")
-     (:file "ssh")))))
+     (:file "ssh")
+     (:file "fetch")))))

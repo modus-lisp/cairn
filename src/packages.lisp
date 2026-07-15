@@ -32,4 +32,6 @@
    #:status #:print-status #:diff
    ;; push + git-over-SSH (via conch)
    #:write-packfile #:objects-to-send #:reachable-objects
-   #:clone-ssh #:push-ssh #:parse-ssh-url))
+   #:clone-ssh #:push-ssh #:parse-ssh-url
+   ;; fetch / pull
+   #:fetch #:pull #:remote-url))

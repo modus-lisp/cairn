@@ -40,9 +40,16 @@
 
 (defun checkout (repo &optional (commit (head-commit repo)))
   "Materialise COMMIT (default HEAD) into REPO's working directory and write the
-   matching .git/index.  Returns the number of files written."
+   matching .git/index.  Files tracked by the old index but absent from COMMIT
+   are removed, so a fast-forward leaves a clean tree.  Returns the file count."
   (let* ((tree (commit-tree (parse-commit (object-data repo commit))))
+         (old (read-index (repo-git-dir repo)))
          (entries (make-array 64 :adjustable t :fill-pointer 0)))
     (write-worktree repo tree (repo-path repo) "" entries)
+    (let ((kept (make-hash-table :test 'equal)))
+      (loop for e across entries do (setf (gethash (ie-path e) kept) t))
+      (loop for e across old
+            unless (gethash (ie-path e) kept)
+              do (uiop:delete-file-if-exists (merge-pathnames (ie-path e) (repo-path repo)))))
     (write-index (repo-git-dir repo) entries)
     (length entries)))

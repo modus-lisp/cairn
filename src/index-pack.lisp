@@ -53,9 +53,11 @@
            (make-pobj :offset start :end (+ pos consumed) :kind :ref-delta
                       :base-sha base-sha :raw delta)))))))
 
-(defun index-pack-objects (data)
+(defun index-pack-objects (data &optional repo)
   "Walk packfile DATA, resolve all deltas, and return a vector of POBJ with
-   :sha / :sha-bytes / :crc filled in.  Verifies the trailing pack checksum."
+   :sha / :sha-bytes / :crc filled in.  Verifies the trailing pack checksum.
+   REPO, if given, lets a *thin* pack (from a fetch with `have`s) resolve
+   ref-deltas whose base is not in the pack but already in the object store."
   (unless (and (= (aref data 0) (char-code #\P)) (= (aref data 1) (char-code #\A))
                (= (aref data 2) (char-code #\C)) (= (aref data 3) (char-code #\K)))
     (error "cairn: not a packfile (bad magic)"))
@@ -87,7 +89,14 @@
                             (values (pobj-type base) (apply-delta (pobj-raw base) (pobj-raw o)))))
                          (:ref-delta
                           (let ((base (gethash (pobj-base-sha o) by-sha)))
-                            (values (pobj-type base) (apply-delta (pobj-raw base) (pobj-raw o))))))
+                            (if base
+                                (values (pobj-type base) (apply-delta (pobj-raw base) (pobj-raw o)))
+                                ;; thin pack: base is already in the local store
+                                (multiple-value-bind (btype bcontent)
+                                    (read-object (or repo (error "cairn: thin-pack base ~a needs a repo"
+                                                                 (pobj-base-sha o)))
+                                                 (pobj-base-sha o))
+                                  (values btype (apply-delta bcontent (pobj-raw o))))))))
                      ;; store the resolved content back so dependents can reuse it
                      (setf (pobj-type o) type
                            (pobj-raw o) content
@@ -138,10 +147,11 @@
   "Lexicographic compare of two equal-length hex strings -> -1/0/1."
   (cond ((string< a b) -1) ((string> a b) 1) (t 0)))
 
-(defun index-pack (pack-bytes pack-dir)
+(defun index-pack (pack-bytes pack-dir &optional repo)
   "Write PACK-BYTES and its computed .idx into PACK-DIR (…/objects/pack/).
-   Returns (values PACK-NAME OBJECT-COUNT)."
-  (let* ((objs (index-pack-objects pack-bytes))
+   Returns (values PACK-NAME OBJECT-COUNT).  REPO lets a thin pack resolve
+   deltas against objects already in the store (see index-pack-objects)."
+  (let* ((objs (index-pack-objects pack-bytes repo))
          (checksum (subseq pack-bytes (- (length pack-bytes) 20)))
          (name (format nil "pack-~a" (bytes->hex checksum)))
          (idx (build-pack-index objs checksum)))
