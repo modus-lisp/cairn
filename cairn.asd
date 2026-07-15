@@ -9,7 +9,7 @@ libgit2, no libcurl, no shelling out to git, no FFI."
   :version "0.0.1"
   :author "ynniv"
   :license "MIT"
-  :depends-on ("seal" "chipz" "salza2" "sb-posix")
+  :depends-on ("seal" "conch" "chipz" "salza2" "sb-posix")
   :serial t
   :components
   ((:module "src"
@@ -25,10 +25,12 @@ libgit2, no libcurl, no shelling out to git, no FFI."
      (:file "write")
      (:file "index")
      (:file "index-pack")
+     (:file "pack-write")
      (:file "checkout")
      (:file "commit")
      (:file "status")
      (:file "diff")
      (:file "pktline")
      (:file "http")
-     (:file "clone")))))
+     (:file "clone")
+     (:file "ssh")))))

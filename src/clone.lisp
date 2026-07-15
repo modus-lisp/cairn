@@ -78,39 +78,44 @@
   "Clone the remote git repository at URL (https) into directory DEST.  Fetches
    and indexes the packfile, writes a real .git, and (unless :checkout nil)
    materialises the working tree.  Returns the open repository."
-  (let* ((base (smart-http-base url))
-         (dest (uiop:ensure-directory-pathname dest))
-         (git-dir (merge-pathnames ".git/" dest)))
+  (let* ((base (smart-http-base url)))
     (multiple-value-bind (refs caps head-target) (discover-refs base)
       (declare (ignore caps))
-      (let* ((wants (remove-duplicates
-                     (loop for (name . sha) in refs
-                           unless (or (string= name "HEAD")
-                                      (and (> (length name) 3)
-                                           (string= name "^{}" :start1 (- (length name) 3))))
-                             collect sha)
-                     :test #'string=))
-             (head-target (or head-target
-                              (car (find-if (lambda (r) (search "refs/heads/" (car r))) refs))
-                              "refs/heads/master")))
+      (let ((wants (refs->wants refs)))
         (format t "~&remote: ~d refs, fetching ~d wanted commits…~%" (length refs) (length wants))
         (let ((pack (fetch-pack base wants)))
           (format t "received packfile: ~d bytes~%" (length pack))
-          ;; lay down the .git
-          (write-text-file (merge-pathnames "HEAD" git-dir)
-                           (format nil "ref: ~a~%" head-target))
-          (write-text-file (merge-pathnames "config" git-dir)
-                           (format nil "[core]~%	repositoryformatversion = 0~%	bare = false~%~
-                                        [remote \"origin\"]~%	url = ~a~%" url))
-          (loop for (name . sha) in refs
-                unless (or (string= name "HEAD")
-                           (and (> (length name) 3)
-                                (string= name "^{}" :start1 (- (length name) 3))))
-                  do (write-text-file (merge-pathnames name git-dir) (format nil "~a~%" sha)))
-          (multiple-value-bind (pack-name count)
-              (index-pack pack (merge-pathnames "objects/pack/" git-dir))
-            (format t "indexed ~a: ~d objects~%" pack-name count))
-          (let ((repo (open-repository dest)))
-            (when checkout
-              (format t "checked out ~d files~%" (checkout repo)))
-            repo))))))
+          (finish-clone dest url refs head-target pack checkout))))))
+
+(defun peeled-ref-p (name)
+  (and (> (length name) 3) (string= name "^{}" :start1 (- (length name) 3))))
+
+(defun refs->wants (refs)
+  "The distinct SHAs to ask for: every advertised ref except HEAD and peeled tags."
+  (remove-duplicates
+   (loop for (name . sha) in refs
+         unless (or (string= name "HEAD") (peeled-ref-p name)) collect sha)
+   :test #'string=))
+
+(defun finish-clone (dest url refs head-target pack checkout)
+  "Lay down a .git for DEST from advertised REFS + fetched PACK, index it, and
+   (optionally) check out.  Shared by HTTP and SSH clone.  Returns the repo."
+  (let* ((dest (uiop:ensure-directory-pathname dest))
+         (git-dir (merge-pathnames ".git/" dest))
+         (head-target (or head-target
+                          (car (find-if (lambda (r) (search "refs/heads/" (car r))) refs))
+                          "refs/heads/master")))
+    (write-text-file (merge-pathnames "HEAD" git-dir) (format nil "ref: ~a~%" head-target))
+    (write-text-file (merge-pathnames "config" git-dir)
+                     (format nil "[core]~%	repositoryformatversion = 0~%	bare = false~%~
+                                  [remote \"origin\"]~%	url = ~a~%" url))
+    (loop for (name . sha) in refs
+          unless (or (string= name "HEAD") (peeled-ref-p name))
+            do (write-text-file (merge-pathnames name git-dir) (format nil "~a~%" sha)))
+    (multiple-value-bind (pack-name count)
+        (index-pack pack (merge-pathnames "objects/pack/" git-dir))
+      (format t "indexed ~a: ~d objects~%" pack-name count))
+    (let ((repo (open-repository dest)))
+      (when checkout
+        (format t "checked out ~d files~%" (checkout repo)))
+      repo)))

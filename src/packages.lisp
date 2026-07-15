@@ -29,4 +29,7 @@
    #:write-object #:add #:write-tree #:commit #:update-ref #:head-ref
    #:read-index #:write-index #:index-entry #:ie-path #:ie-sha #:ie-mode
    ;; status / diff
-   #:status #:print-status #:diff))
+   #:status #:print-status #:diff
+   ;; push + git-over-SSH (via conch)
+   #:write-packfile #:objects-to-send #:reachable-objects
+   #:clone-ssh #:push-ssh #:parse-ssh-url))
