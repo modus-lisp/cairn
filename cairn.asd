@@ -8,7 +8,7 @@ inflate) — no libgit2, no shelling out to git, no FFI."
   :version "0.0.1"
   :author "ynniv"
   :license "MIT"
-  :depends-on ("seal" "chipz")
+  :depends-on ("seal" "chipz" "sb-posix")
   :serial t
   :components
   ((:module "src"
@@ -24,4 +24,5 @@ inflate) — no libgit2, no shelling out to git, no FFI."
      (:file "pktline")
      (:file "http")
      (:file "index-pack")
+     (:file "checkout")
      (:file "clone")))))

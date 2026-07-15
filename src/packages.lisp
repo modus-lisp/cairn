@@ -24,4 +24,4 @@
    ;; plumbing / porcelain
    #:cat-file #:cat-file-string #:log-commits #:ls-tree #:rev-parse
    ;; transport (smart HTTP over seal)
-   #:clone #:discover-refs #:fetch-pack #:index-pack))
+   #:clone #:discover-refs #:fetch-pack #:index-pack #:checkout))

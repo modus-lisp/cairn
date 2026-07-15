@@ -81,9 +81,10 @@
     (write-string text s))
   path)
 
-(defun clone (url dest)
+(defun clone (url dest &key (checkout t))
   "Clone the remote git repository at URL (https) into directory DEST.  Fetches
-   and indexes the packfile and writes a real .git; returns the open repository."
+   and indexes the packfile, writes a real .git, and (unless :checkout nil)
+   materialises the working tree.  Returns the open repository."
   (let* ((base (smart-http-base url))
          (dest (uiop:ensure-directory-pathname dest))
          (git-dir (merge-pathnames ".git/" dest)))
@@ -116,4 +117,7 @@
           (multiple-value-bind (pack-name count)
               (index-pack pack (merge-pathnames "objects/pack/" git-dir))
             (format t "indexed ~a: ~d objects~%" pack-name count))
-          (open-repository dest))))))
+          (let ((repo (open-repository dest)))
+            (when checkout
+              (format t "checked out ~d files~%" (checkout repo)))
+            repo))))))
