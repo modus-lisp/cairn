@@ -100,16 +100,6 @@
 
 ;;; ---- v2 index writer --------------------------------------------------------
 
-(defun %push-be32 (vec u)
-  (vector-push-extend (logand (ash u -24) #xff) vec)
-  (vector-push-extend (logand (ash u -16) #xff) vec)
-  (vector-push-extend (logand (ash u -8) #xff) vec)
-  (vector-push-extend (logand u #xff) vec))
-
-(defun %push-be64 (vec u)
-  (%push-be32 vec (logand (ash u -32) #xffffffff))
-  (%push-be32 vec (logand u #xffffffff)))
-
 (defun build-pack-index (objs pack-checksum)
   "Build the v2 .idx byte vector for the POBJ vector OBJS.  PACK-CHECKSUM is the
    pack's trailing 20-byte SHA-1."
@@ -147,12 +137,6 @@
 (defun %cmp-hex (a b)
   "Lexicographic compare of two equal-length hex strings -> -1/0/1."
   (cond ((string< a b) -1) ((string> a b) 1) (t 0)))
-
-(defun write-bytes (path bytes)
-  (with-open-file (s path :element-type '(unsigned-byte 8)
-                          :direction :output :if-exists :supersede :if-does-not-exist :create)
-    (write-sequence bytes s))
-  path)
 
 (defun index-pack (pack-bytes pack-dir)
   "Write PACK-BYTES and its computed .idx into PACK-DIR (…/objects/pack/).

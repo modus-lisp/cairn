@@ -74,13 +74,6 @@
         (unless start (error "cairn: no packfile in upload-pack response"))
         (subseq resp start)))))
 
-(defun write-text-file (path text)
-  (ensure-directories-exist path)
-  (with-open-file (s path :direction :output :if-exists :supersede
-                          :if-does-not-exist :create :external-format :utf-8)
-    (write-string text s))
-  path)
-
 (defun clone (url dest &key (checkout t))
   "Clone the remote git repository at URL (https) into directory DEST.  Fetches
    and indexes the packfile, writes a real .git, and (unless :checkout nil)

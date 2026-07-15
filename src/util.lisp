@@ -63,8 +63,47 @@
                       (aref *crc32-table* (logand (logxor c (aref bytes i)) #xff)))))
     (logxor c #xffffffff)))
 
-;;; The compress side arrives with cairn's write path (salza2, chipz's sibling).
+;;; The compress side is salza2 — chipz's pure-Common-Lisp sibling.
 (defun deflate (bytes)
-  (declare (ignore bytes)) (error "cairn: deflate (write side) not yet implemented"))
+  "Raw DEFLATE (RFC 1951) compress of BYTES."
+  (salza2:compress-data (coerce bytes 'u8v) 'salza2:deflate-compressor))
+
 (defun zlib-compress (bytes)
-  (declare (ignore bytes)) (error "cairn: zlib-compress (write side) not yet implemented"))
+  "zlib (RFC 1950) compress of BYTES — how git stores a loose object."
+  (salza2:compress-data (coerce bytes 'u8v) 'salza2:zlib-compressor))
+
+;;; --- byte-buffer + file helpers (shared by the pack/index writers) -----------
+
+(defun %push-be16 (vec u)
+  (vector-push-extend (logand (ash u -8) #xff) vec)
+  (vector-push-extend (logand u #xff) vec))
+
+(defun %push-be32 (vec u)
+  (vector-push-extend (logand (ash u -24) #xff) vec)
+  (vector-push-extend (logand (ash u -16) #xff) vec)
+  (vector-push-extend (logand (ash u -8) #xff) vec)
+  (vector-push-extend (logand u #xff) vec))
+
+(defun %push-be64 (vec u)
+  (%push-be32 vec (logand (ash u -32) #xffffffff))
+  (%push-be32 vec (logand u #xffffffff)))
+
+(defun byte-buffer ()
+  (make-array 256 :element-type '(unsigned-byte 8) :adjustable t :fill-pointer 0))
+
+(defun push-bytes (vec bytes)
+  (loop for b across bytes do (vector-push-extend b vec)))
+
+(defun write-bytes (path bytes)
+  (ensure-directories-exist path)
+  (with-open-file (s path :element-type '(unsigned-byte 8)
+                          :direction :output :if-exists :supersede :if-does-not-exist :create)
+    (write-sequence bytes s))
+  path)
+
+(defun write-text-file (path text)
+  (ensure-directories-exist path)
+  (with-open-file (s path :direction :output :if-exists :supersede
+                          :if-does-not-exist :create :external-format :utf-8)
+    (write-string text s))
+  path)
