@@ -13,13 +13,20 @@
   (let ((u (string-right-trim "/" url)))
     (if (search ".git" u) u (concatenate 'string u ".git"))))
 
-(defun discover-refs (base)
-  "GET BASE/info/refs?service=git-upload-pack.  Returns (values REFS CAPS
-   HEAD-TARGET), REFS an alist of (refname . sha), CAPS the capability string,
-   HEAD-TARGET the symref HEAD points at (or NIL)."
-  (let* ((u (parse-url (format nil "~a/info/refs?service=git-upload-pack" base))))
+(defun auth-header (username token)
+  "An HTTP Basic Authorization header, or NIL when USERNAME is unset."
+  (when username
+    (list (cons "Authorization"
+                (concatenate 'string "Basic "
+                             (base64-encode (string->bytes (format nil "~a:~a" username token))))))))
+
+(defun discover-refs (base &key (service "git-upload-pack") auth)
+  "GET BASE/info/refs?service=SERVICE.  Returns (values REFS CAPS HEAD-TARGET),
+   REFS an alist of (refname . sha), CAPS the capability string, HEAD-TARGET the
+   symref HEAD points at (or NIL).  AUTH is an optional Authorization header alist."
+  (let* ((u (parse-url (format nil "~a/info/refs?service=~a" base service))))
     (multiple-value-bind (code hdrs body)
-        (https-request "GET" (parsed-url-host u) (parsed-url-port u) (parsed-url-path u))
+        (https-request "GET" (parsed-url-host u) (parsed-url-port u) (parsed-url-path u) :headers auth)
       (declare (ignore hdrs))
       (unless (= code 200) (error "cairn: info/refs returned HTTP ~d" code))
       (let ((pos 0) (refs '()) (caps "") (head-target nil) (first t))
@@ -123,3 +130,64 @@
       (when checkout
         (format t "checked out ~d files~%" (checkout repo)))
       repo)))
+
+;;; ---- push over smart HTTP (send-pack) ---------------------------------------
+
+(defun remote-haves (repo refs)
+  "The advertised remote-ref SHAs we already hold — the objects the remote has,
+   so `send-pack` need not resend history reachable from any of its refs."
+  (remove-duplicates
+   (loop for (nil . sha) in refs
+         when (and (not (string= sha +zero-sha+)) (have-object-p repo sha)) collect sha)
+   :test #'string=))
+
+(defun parse-report (buf)
+  "Read a receive-pack report-status (pkt-lines in BUF) into a list of strings."
+  (let ((pos 0) (lines '()))
+    (loop
+      (when (>= pos (length buf)) (return))
+      (multiple-value-bind (payload np kind) (read-pktline buf pos)
+        (setf pos np)
+        (when (member kind '(:flush :response-end)) (return))
+        (when (eq kind :data) (push (pktline-payload-string payload) lines))))
+    (nreverse lines)))
+
+(defun push-http (repo url &key username token ref)
+  "Push REPO's current branch (or REF) to URL over smart HTTP.  USERNAME/TOKEN
+   are HTTP Basic credentials (e.g. a GitHub username + personal-access-token).
+   Returns the remote's report-status lines; signals if the update was rejected."
+  (let* ((base (smart-http-base url))
+         (auth (auth-header username token)))
+    (multiple-value-bind (refs caps) (discover-refs base :service "git-receive-pack" :auth auth)
+      (declare (ignore caps))
+      (multiple-value-bind (kind localref) (head-ref repo)
+        (let* ((refname (or ref (if (eq kind :symbolic) localref
+                                    (error "cairn: detached HEAD, pass :ref"))))
+               (new (head-commit repo))
+               (old (or (cdr (assoc refname refs :test #'string=)) +zero-sha+))
+               (send (objects-to-send repo new (remote-haves repo refs)))
+               (pack (write-packfile repo send))
+               (u (parse-url (format nil "~a/git-receive-pack" base)))
+               (body (let ((out (byte-buffer)))
+                       (push-bytes out (pktline (format nil "~a ~a ~a~creport-status agent=cairn/0.1~%"
+                                                         old new refname #\Nul)))
+                       (push-bytes out +flush-pkt+)
+                       (push-bytes out pack)
+                       (coerce out 'u8v))))
+          (format t "~&pushing ~a  ~a -> ~a  (~d objects, ~d bytes)~%"
+                  refname (short old) (short new) (length send) (length pack))
+          (multiple-value-bind (code hdrs resp)
+              (https-request "POST" (parsed-url-host u) (parsed-url-port u) (parsed-url-path u)
+                             :headers (append (list (cons "Content-Type"
+                                                          "application/x-git-receive-pack-request"))
+                                              auth)
+                             :body body)
+            (declare (ignore hdrs))
+            (unless (= code 200) (error "cairn: git-receive-pack returned HTTP ~d" code))
+            (let ((report (parse-report resp)))
+              (dolist (l report) (format t "  remote: ~a~%" l))
+              (unless (find "unpack ok" report :test #'string=)
+                (error "cairn: remote failed to unpack: ~a" report))
+              (unless (some (lambda (l) (and (>= (length l) 3) (string= (subseq l 0 3) "ok "))) report)
+                (error "cairn: ref update rejected: ~a" report))
+              report)))))))

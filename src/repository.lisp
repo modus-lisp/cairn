@@ -33,6 +33,10 @@
 (defun object-type (repo sha) (values (read-object repo sha)))
 (defun object-data (repo sha) (nth-value 1 (read-object repo sha)))
 
+(defun have-object-p (repo sha)
+  "Is the object named by SHA present in REPO (loose or packed)?"
+  (handler-case (progn (read-object repo sha) t) (error () nil)))
+
 (defun repo-loaded-packs (repo)
   "The repository's packfiles (opened + cached on first use)."
   (when (eq (repo-packs repo) :unloaded)

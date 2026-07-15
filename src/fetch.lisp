@@ -14,9 +14,6 @@
   (or (and (>= (length url) 6) (string= (subseq url 0 6) "ssh://"))
       (and (find #\@ url) (not (search "://" url)))))
 
-(defun have-object-p (repo sha)
-  (handler-case (progn (read-object repo sha) t) (error () nil)))
-
 (defun local-haves (repo &optional (limit 256))
   "Commit SHAs we already hold, newest-first, for `have` negotiation (capped)."
   (let ((haves '()) (seen (make-hash-table :test 'equal)) (queue '()) (n 0))

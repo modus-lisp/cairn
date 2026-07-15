@@ -107,3 +107,22 @@
                           :if-does-not-exist :create :external-format :utf-8)
     (write-string text s))
   path)
+
+(defparameter +zero-sha+ "0000000000000000000000000000000000000000"
+  "The all-zero object id — a ref's \"old\" value when it is being created.")
+
+(defun short (sha) (subseq sha 0 (min 8 (length sha))))
+
+(defun base64-encode (bytes)
+  "Standard base64 of a byte vector (for HTTP Basic auth)."
+  (let ((tbl "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
+        (out (make-string-output-stream)) (n (length bytes)))
+    (loop for i from 0 below n by 3 do
+      (let ((triple (logior (ash (aref bytes i) 16)
+                            (ash (if (< (+ i 1) n) (aref bytes (+ i 1)) 0) 8)
+                            (if (< (+ i 2) n) (aref bytes (+ i 2)) 0))))
+        (write-char (char tbl (ldb (byte 6 18) triple)) out)
+        (write-char (char tbl (ldb (byte 6 12) triple)) out)
+        (write-char (if (< (+ i 1) n) (char tbl (ldb (byte 6 6) triple)) #\=) out)
+        (write-char (if (< (+ i 2) n) (char tbl (ldb (byte 6 0) triple)) #\=) out)))
+    (get-output-stream-string out)))

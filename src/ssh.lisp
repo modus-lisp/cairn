@@ -99,9 +99,6 @@
 
 ;;; ---- push (send-pack) -------------------------------------------------------
 
-(defparameter +zero-sha+ "0000000000000000000000000000000000000000")
-(defun short (sha) (subseq sha 0 (min 8 (length sha))))
-
 (defun read-report (c)
   "Read a receive-pack report-status: unpack line + per-ref status until flush."
   (let ((lines '()))
@@ -124,8 +121,7 @@
                                            (error "cairn: detached HEAD, pass :ref"))))
                       (new (head-commit repo))
                       (old (or (cdr (assoc refname refs :test #'string=)) +zero-sha+))
-                      (haves (unless (string= old +zero-sha+) (list old)))
-                      (send (objects-to-send repo new haves))
+                      (send (objects-to-send repo new (remote-haves repo refs)))
                       (pack (write-packfile repo send)))
                  (format t "~&pushing ~a  ~a -> ~a  (~d objects, ~d bytes)~%"
                          refname (short old) (short new) (length send) (length pack))
