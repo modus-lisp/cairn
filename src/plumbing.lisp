@@ -4,28 +4,32 @@
 
 (defun rev-parse (repo rev)
   "Resolve REV (a ref name, HEAD, or a full 40-hex sha) to a sha."
-  (cond ((and (= (length rev) 40) (every (lambda (c) (digit-char-p c 16)) rev)) rev)
+  (with-oid (repo)
+  (cond ((and (= (length rev) (oid-nhex)) (every (lambda (c) (digit-char-p c 16)) rev)) rev)
         ((resolve-ref repo rev))
         ((resolve-ref repo (concatenate 'string "refs/heads/" rev)))
         ((resolve-ref repo (concatenate 'string "refs/tags/" rev)))
-        (t (error "cairn: unknown revision ~a" rev))))
+        (t (error "cairn: unknown revision ~a" rev)))))
 
 (defun cat-file (repo rev)
   "Return (values TYPE CONTENT-BYTES) for the object REV names."
-  (read-object repo (rev-parse repo rev)))
+  (with-oid (repo)
+  (read-object repo (rev-parse repo rev))))
 
 (defun cat-file-string (repo rev)
   "cat-file, with the content decoded as a string (git cat-file -p style)."
+  (with-oid (repo)
   (multiple-value-bind (type content) (cat-file repo rev)
-    (values (ascii content) type)))
+    (values (ascii content) type))))
 
 (defun ls-tree (repo rev)
   "List the tree of REV (a tree sha, or a commit whose tree is used)."
+  (with-oid (repo)
   (let ((sha (rev-parse repo rev)))
     (multiple-value-bind (type content) (read-object repo sha)
       (parse-tree (ecase type
                     (:tree content)
-                    (:commit (nth-value 1 (read-object repo (commit-tree (parse-commit content))))))))))
+                    (:commit (nth-value 1 (read-object repo (commit-tree (parse-commit content)))))))))))
 
 (defun log-commits (repo &key (start "HEAD") limit)
   "Walk the first-parent ancestry from START; return a list of (SHA . COMMIT)."

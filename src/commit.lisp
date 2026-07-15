@@ -27,6 +27,7 @@
 (defun add (repo &rest paths)
   "Stage the working-tree files at repo-relative PATHS: write each as a blob and
    upsert its index entry.  Writes the index and returns the staged paths."
+  (with-oid (repo)
   (let* ((git-dir (repo-git-dir repo))
          (index (coerce (read-index git-dir) 'list)))
     (dolist (rel paths)
@@ -35,7 +36,7 @@
           (setf index (cons (stat-index-entry abs rel sha mode)
                             (remove rel index :key #'ie-path :test #'string=))))))
     (write-index git-dir index)
-    paths))
+    paths)))
 
 ;;; ---- write-tree -------------------------------------------------------------
 
@@ -71,7 +72,8 @@
 
 (defun write-tree (repo)
   "Write tree objects for the current index; return the root tree SHA."
-  (build-tree repo (coerce (read-index (repo-git-dir repo)) 'list) ""))
+  (with-oid (repo)
+  (build-tree repo (coerce (read-index (repo-git-dir repo)) 'list) "")))
 
 ;;; ---- commit -----------------------------------------------------------------
 
@@ -84,6 +86,7 @@
                          (timezone "+0000"))
   "Create a commit of the current index whose parent is the current HEAD, write
    it, and advance the branch (or detached HEAD).  Returns the new commit SHA."
+  (with-oid (repo)
   (unless message (error "cairn: commit requires a :message"))
   (let* ((tree (write-tree repo))
          (parent (ignore-errors (head-commit repo)))    ; NIL for an unborn branch
@@ -102,4 +105,4 @@
         (:symbolic (update-ref repo ref sha))
         (:detached (write-text-file (merge-pathnames "HEAD" (repo-git-dir repo))
                                     (format nil "~a~%" sha)))))
-    sha))
+    sha)))

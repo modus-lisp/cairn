@@ -26,32 +26,32 @@
     (make-pack :path pack-path :idx idx :pack-data (slurp-bytes pack-path)
                :n (be32 idx (+ 8 (* 255 4))))))                 ; fanout[255] = object count
 
-(defun %cmp20 (bytes off sha)
-  "Compare the 20 bytes at BYTES[OFF] against SHA (20 bytes).  -1 / 0 / 1."
-  (dotimes (i 20 0)
+(defun %cmp-oid (bytes off sha)
+  "Compare the oid-width bytes at BYTES[OFF] against SHA.  -1 / 0 / 1."
+  (dotimes (i (oid-nbytes) 0)
     (let ((a (aref bytes (+ off i))) (b (aref sha i)))
       (cond ((< a b) (return -1)) ((> a b) (return 1))))))
 
 (defun pack-find-offset (pack sha-hex)
   "The byte offset in the .pack of SHA-HEX, or NIL if not in this pack."
-  (let* ((idx (pack-idx pack)) (n (pack-n pack))
-         (sha (hex->bytes sha-hex)) (fb (aref sha 0))
+  (let* ((idx (pack-idx pack))
+         (sha (hex->bytes sha-hex)) (fb (aref sha 0)) (w (oid-nbytes))
          (lo (if (zerop fb) 0 (be32 idx (+ 8 (* (1- fb) 4)))))
          (hi (be32 idx (+ 8 (* fb 4))))
          (sha-table 1032))                                      ; 8 + 256*4
     (loop while (< lo hi) do
       (let* ((mid (floor (+ lo hi) 2))
-             (cmp (%cmp20 idx (+ sha-table (* mid 20)) sha)))
+             (cmp (%cmp-oid idx (+ sha-table (* mid w)) sha)))
         (cond ((zerop cmp) (return-from pack-find-offset (idx-offset pack mid)))
               ((minusp cmp) (setf lo (1+ mid)))
               (t (setf hi mid)))))
     nil))
 
 (defun idx-offset (pack i)
-  (let* ((idx (pack-idx pack)) (n (pack-n pack))
-         (o4 (be32 idx (+ 1032 (* n 24) (* i 4)))))            ; after sha(20)+crc(4) per obj
+  (let* ((idx (pack-idx pack)) (n (pack-n pack)) (w (oid-nbytes))
+         (o4 (be32 idx (+ 1032 (* n (+ w 4)) (* i 4)))))        ; after sha(w)+crc(4) per obj
     (if (logtest o4 #x80000000)
-        (be64 idx (+ 1032 (* n 28) (* (logand o4 #x7fffffff) 8)))
+        (be64 idx (+ 1032 (* n (+ w 8)) (* (logand o4 #x7fffffff) 8)))
         o4)))
 
 (defun pack-type-keyword (n)
@@ -78,8 +78,8 @@
          (multiple-value-bind (btype bcontent) (pack-read-at pack (- offset base-rel) repo)
            (values btype (apply-delta bcontent (zlib-decompress data pos))))))
       (7                                                        ; ref-delta
-       (let ((base-sha (bytes->hex (subseq data pos (+ pos 20)))))
-         (incf pos 20)
+       (let ((base-sha (bytes->hex (subseq data pos (+ pos (oid-nbytes))))))
+         (incf pos (oid-nbytes))
          (multiple-value-bind (btype bcontent) (read-object repo base-sha)
            (values btype (apply-delta bcontent (zlib-decompress data pos))))))
       (t (error "cairn: unknown pack object type ~d" type)))))

@@ -35,6 +35,14 @@ natrium**. No OpenSSL, no libcurl, no libssh; the whole stack is Common Lisp.
 ;; --- clone over HTTPS (cairn -> seal TLS -> natrium), checkout included ---
 (cairn:clone "https://github.com/modus-lisp/natrium" "/tmp/natrium")
 
+;; --- push to a remote over HTTPS with a token (GitHub etc.) ---
+(cairn:push-http (cairn:open-repository "/tmp/repo") "https://github.com/you/repo"
+                 :username "you" :token (uiop:getenv "GH_TOKEN"))
+
+;; --- SHA-256 repositories are read and written transparently ---
+;; (git init --object-format=sha256): cairn detects the format from .git/config
+;; and every width — object ids, tree entries, pack/index — follows.
+
 ;; --- clone over SSH (cairn -> conch -> natrium) ---
 (cairn:clone-ssh "ssh://git@host/srv/repo.git" "/tmp/repo"
                  :identity "~/.ssh/id_ed25519")
@@ -78,7 +86,12 @@ agrees — the strongest test available:
   remote's HEAD is cairn's commit and `git fsck` is clean; an incremental fetch
   transfers only the new objects and fast-forwards cleanly. The packs cairn
   writes are **delta-compressed** (ofs-delta) — within a few percent of git's own
-  pack size, and `git verify-pack` resolves every delta.
+  pack size, and `git verify-pack` resolves every delta. Push works over SSH and
+  over HTTPS (Basic auth) — a real GitHub push round-trips.
+- **SHA-256** repositories (`git init --object-format=sha256`) are read and
+  written: cairn re-hashes every object, and a commit it writes has a SHA-256 id
+  equal to `git rev-parse HEAD`, with `git fsck`/`git status` clean — loose and
+  packed.
 - **Merge** matches git: a clean three-way merge produces a tree byte-identical
   to `git merge`'s (same two parents); a conflict produces identical
   `<<<<<<<`/`=======`/`>>>>>>>` markers and an unmerged index (stages 1/2/3) that
@@ -109,8 +122,9 @@ each library built so the next could exist.
 
 ## Not yet
 
-HTTP push (needs credential auth; SSH push works), SHA-256 repositories, the
-commit-graph, and shallow/partial clone. Contributions welcome.
+SHA-256 over the wire (clone/fetch/push negotiate `object-format`; local
+SHA-256 repos work), the commit-graph, and shallow/partial clone. Contributions
+welcome.
 
 `merge` is recursive over multiple merge bases (criss-cross histories); a clean
 recursive merge is byte-identical to git's, though the exact *conflict-hunk*

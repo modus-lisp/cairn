@@ -10,12 +10,13 @@
 (defun write-object (repo type content)
   "Write an object of TYPE with CONTENT bytes to REPO's loose store.  Returns
    its SHA-1 hex id.  A no-op if the object already exists."
+  (with-oid (repo)
   (let* ((body (concatenate 'u8v (object-header type content) content))
-         (sha (sha1-hex body))
+         (sha (oid-hex body))
          (path (object-path repo sha)))
     (unless (probe-file path)
       (write-bytes path (zlib-compress body)))
-    sha))
+    sha)))
 
 (defun write-blob-from-file (repo path)
   "Read the working-tree file (or symlink) at PATH, write it as a blob, and

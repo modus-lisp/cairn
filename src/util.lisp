@@ -29,6 +29,21 @@
 
 (defun sha1-hex (msg) (bytes->hex (sha1 msg)))
 
+;;; --- object id, hash-agnostic (SHA-1 or SHA-256) -----------------------------
+;;;
+;;; git can address objects by SHA-256 instead of SHA-1 (repositories created
+;;; with --object-format=sha256).  Everything downstream — object ids, tree
+;;; entry widths, pack/index layouts — follows from the digest, so we bind *OID*
+;;; to the repository's format and read the width and hash function from it.
+
+(defvar *oid* :sha1 "The active object format: :sha1 or :sha256.")
+
+(defun oid-digest (bytes)
+  (ecase *oid* (:sha1 (seal:sha1 bytes)) (:sha256 (seal:sha256 bytes))))
+(defun oid-nbytes () (ecase *oid* (:sha1 20) (:sha256 32)))
+(defun oid-nhex   () (ecase *oid* (:sha1 40) (:sha256 64)))
+(defun oid-hex (bytes) (bytes->hex (oid-digest bytes)))
+
 ;;; --- DEFLATE / zlib (from chipz) -----------------------------------------
 
 (defun inflate (data &optional (start 0))

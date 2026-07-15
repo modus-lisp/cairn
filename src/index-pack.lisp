@@ -47,8 +47,8 @@
            (make-pobj :offset start :end (+ pos consumed) :kind :ofs-delta
                       :base-off (- start base-rel) :raw delta))))
       (7                                                   ; ref-delta
-       (let ((base-sha (bytes->hex (subseq data pos (+ pos 20)))))
-         (incf pos 20)
+       (let ((base-sha (bytes->hex (subseq data pos (+ pos (oid-nbytes))))))
+         (incf pos (oid-nbytes))
          (multiple-value-bind (delta consumed) (inflate-at data pos size)
            (make-pobj :offset start :end (+ pos consumed) :kind :ref-delta
                       :base-sha base-sha :raw delta)))))))
@@ -74,8 +74,8 @@
               (gethash (pobj-offset o) by-offset) o
               pos (pobj-end o))))
     ;; verify pack trailer = SHA-1 of everything before it
-    (let ((trailer (subseq data pos (+ pos 20))))
-      (unless (equalp trailer (sha1 (subseq data 0 pos)))
+    (let ((trailer (subseq data pos (+ pos (oid-nbytes)))))
+      (unless (equalp trailer (oid-digest (subseq data 0 pos)))
         (error "cairn: pack checksum mismatch")))
     ;; pass 2 — resolve deltas (bases always precede in a non-thin pack) and hash
     (labels ((resolve (o)
@@ -139,7 +139,7 @@
     (dolist (off (nreverse large)) (%push-be64 idx off))
     ;; pack checksum, then the idx's own checksum
     (loop for b across pack-checksum do (vector-push-extend b idx))
-    (let ((digest (sha1 (subseq idx 0 (fill-pointer idx)))))
+    (let ((digest (oid-digest (subseq idx 0 (fill-pointer idx)))))
       (loop for b across digest do (vector-push-extend b idx)))
     (coerce idx '(simple-array (unsigned-byte 8) (*)))))
 
@@ -152,7 +152,7 @@
    Returns (values PACK-NAME OBJECT-COUNT).  REPO lets a thin pack resolve
    deltas against objects already in the store (see index-pack-objects)."
   (let* ((objs (index-pack-objects pack-bytes repo))
-         (checksum (subseq pack-bytes (- (length pack-bytes) 20)))
+         (checksum (subseq pack-bytes (- (length pack-bytes) (oid-nbytes))))
          (name (format nil "pack-~a" (bytes->hex checksum)))
          (idx (build-pack-index objs checksum)))
     (ensure-directories-exist pack-dir)

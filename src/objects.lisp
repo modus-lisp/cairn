@@ -43,9 +43,10 @@
 (defun string->bytes (s) (map '(simple-array (unsigned-byte 8) (*)) #'char-code s))
 
 (defun hash-object (type content)
-  "The git object id (SHA-1 hex) of an object of TYPE with CONTENT bytes."
-  (sha1-hex (concatenate '(simple-array (unsigned-byte 8) (*))
-                         (object-header type content) content)))
+  "The git object id (hex) of an object of TYPE with CONTENT bytes, under the
+   active object format (*oid*)."
+  (oid-hex (concatenate '(simple-array (unsigned-byte 8) (*))
+                        (object-header type content) content)))
 
 ;;; ---- commit -----------------------------------------------------------------
 (defstruct commit tree parents author committer message)
@@ -78,9 +79,10 @@
              (mode (ascii (subseq content i sp)))
              (nul (position 0 content :start sp))
              (name (ascii (subseq content (1+ sp) nul)))
-             (sha (bytes->hex (subseq content (1+ nul) (+ nul 21)))))
+             (end (+ nul 1 (oid-nbytes)))
+             (sha (bytes->hex (subseq content (1+ nul) end))))
         (push (make-tree-entry :mode mode :name name :sha sha) entries)
-        (setf i (+ nul 21))))
+        (setf i end)))
     (nreverse entries)))
 
 (defun tree-entries (content) (parse-tree content))

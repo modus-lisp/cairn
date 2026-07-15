@@ -2,18 +2,28 @@
 
 (in-package #:cairn)
 
-(defstruct (repository (:conc-name repo-)) path git-dir (packs :unloaded))
+(defstruct (repository (:conc-name repo-)) path git-dir (packs :unloaded) (format :sha1))
+
+(defun detect-object-format (git-dir)
+  "Read [extensions] objectformat from .git/config; :sha256 or (default) :sha1."
+  (let ((cfg (ignore-errors (slurp-string (merge-pathnames "config" git-dir)))))
+    (if (and cfg (search "objectformat = sha256" cfg)) :sha256 :sha1)))
+
+(defmacro with-oid ((repo) &body body)
+  "Evaluate BODY with *OID* bound to REPO's object format."
+  `(let ((*oid* (repo-format ,repo))) ,@body))
 
 (defun open-repository (path)
   "Open the git repository at PATH (which must contain a .git directory, or be a
    bare repository)."
   (let* ((base (uiop:ensure-directory-pathname path))
          (dotgit (merge-pathnames ".git/" base)))
-    (cond ((probe-file (merge-pathnames "HEAD" dotgit))
-           (make-repository :path base :git-dir dotgit))
-          ((probe-file (merge-pathnames "HEAD" base))       ; bare repo
-           (make-repository :path base :git-dir base))
-          (t (error "cairn: not a git repository: ~a" path)))))
+    (flet ((mk (git-dir &optional (repo-base base))
+             (make-repository :path repo-base :git-dir git-dir
+                              :format (detect-object-format git-dir))))
+      (cond ((probe-file (merge-pathnames "HEAD" dotgit)) (mk dotgit))
+            ((probe-file (merge-pathnames "HEAD" base)) (mk base))    ; bare repo
+            (t (error "cairn: not a git repository: ~a" path))))))
 
 (defmacro with-repository ((var path) &body body)
   `(let ((,var (open-repository ,path))) ,@body))
@@ -23,12 +33,13 @@
                    (repo-git-dir repo)))
 
 (defun read-object (repo sha)
-  "Return (values TYPE-KEYWORD CONTENT-BYTES) for the object named by the 40-hex
+  "Return (values TYPE-KEYWORD CONTENT-BYTES) for the object named by the hex
    SHA.  Looks in the loose object store, then packfiles."
-  (let ((path (object-path repo sha)))
-    (if (probe-file path)
-        (parse-object (zlib-decompress (slurp-bytes path)))
-        (read-pack-object repo sha))))
+  (with-oid (repo)
+    (let ((path (object-path repo sha)))
+      (if (probe-file path)
+          (parse-object (zlib-decompress (slurp-bytes path)))
+          (read-pack-object repo sha)))))
 
 (defun object-type (repo sha) (values (read-object repo sha)))
 (defun object-data (repo sha) (nth-value 1 (read-object repo sha)))

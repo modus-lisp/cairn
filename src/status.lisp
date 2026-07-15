@@ -64,6 +64,7 @@
   "Return (values STAGED UNSTAGED UNTRACKED UNMERGED).  STAGED/UNSTAGED are
    alists of (path . :added/:modified/:deleted); UNTRACKED and UNMERGED are lists
    of paths (UNMERGED = paths with conflict stages recorded by a merge)."
+  (with-oid (repo)
   (let* ((index (read-index (repo-git-dir repo)))
          (index-map (make-hash-table :test 'equal))
          (head (head-tree-map repo))
@@ -96,7 +97,7 @@
     (values (sort staged #'string< :key #'car)
             (sort unstaged #'string< :key #'car)
             (sort untracked #'string<)
-            (sort unmerged #'string<))))
+            (sort unmerged #'string<)))))
 
 (defun print-status (repo &optional (stream *standard-output*))
   "A git-style status summary."

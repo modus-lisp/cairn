@@ -258,6 +258,7 @@
    two-parent merge commit and checks it out; on conflicts writes markered files
    + index stages + MERGE_HEAD and returns (values :conflicts PATHS).  Conflict
    handling is *merge-resolver*."
+  (with-oid (repo)
   (let* ((theirs (rev-parse repo commitish))
          (ours (head-commit repo))
          (*merge-theirs-label* theirs-label))
@@ -281,7 +282,7 @@
            (if conflicts
                (finish-conflicted-merge repo result conflicts theirs theirs-label)
                (finish-clean-merge repo (write-tree-from-map repo result)
-                                   ours theirs theirs-label message author committer))))))))
+                                   ours theirs theirs-label message author committer)))))))))
 
 ;;; ---- pull (fetch + merge) ---------------------------------------------------
 

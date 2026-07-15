@@ -106,6 +106,7 @@
 (defun diff (repo &key cached (stream *standard-output*))
   "Print unified diffs.  Default: working tree vs index (unstaged changes).
    :cached t: index vs HEAD (staged changes)."
+  (with-oid (repo)
   (let ((index-map (make-hash-table :test 'equal)))
     (loop for e across (read-index (repo-git-dir repo))
           do (setf (gethash (ie-path e) index-map) (ie-sha e)))
@@ -125,4 +126,4 @@
         (maphash (lambda (path sha)
                    (format-unified (blob-or-empty repo sha) (worktree-bytes repo path)
                                    path :stream stream))
-                 index-map))))
+                 index-map)))))

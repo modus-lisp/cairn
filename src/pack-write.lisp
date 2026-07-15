@@ -179,5 +179,5 @@
                (push-bytes buf (zlib-compress (pw-delta obj)))))
             (t (write-obj-header buf (pw-tnum obj) (length (pw-content obj)))
                (push-bytes buf (zlib-compress (pw-content obj))))))
-    (push-bytes buf (sha1 (subseq buf 0 (fill-pointer buf))))
+    (push-bytes buf (oid-digest (subseq buf 0 (fill-pointer buf))))
     (coerce buf 'u8v)))
