@@ -27,6 +27,8 @@ libgit2, no libcurl, no shelling out to git, no FFI."
      (:file "index-pack")
      (:file "checkout")
      (:file "commit")
+     (:file "status")
+     (:file "diff")
      (:file "pktline")
      (:file "http")
      (:file "clone")))))

@@ -27,4 +27,6 @@
    #:clone #:discover-refs #:fetch-pack #:index-pack #:checkout
    ;; write side
    #:write-object #:add #:write-tree #:commit #:update-ref #:head-ref
-   #:read-index #:write-index #:index-entry #:ie-path #:ie-sha #:ie-mode))
+   #:read-index #:write-index #:index-entry #:ie-path #:ie-sha #:ie-mode
+   ;; status / diff
+   #:status #:print-status #:diff))
