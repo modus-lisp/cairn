@@ -95,7 +95,7 @@
 (defun stat-index-entry (path relpath sha mode)
   "Build an INDEX-ENTRY for the on-disk file PATH (repo-relative RELPATH), whose
    blob is SHA and tree-mode is the octal string MODE."
-  (let ((st (sb-posix:lstat (namestring path))))
+  (let ((st (sb-posix:lstat (native path))))
     (make-index-entry :ctime (sb-posix:stat-ctime st) :mtime (sb-posix:stat-mtime st)
                       :dev (sb-posix:stat-dev st) :ino (sb-posix:stat-ino st)
                       :mode (tree-mode->index-mode mode) :uid (sb-posix:stat-uid st)

@@ -31,7 +31,7 @@
   (let* ((git-dir (repo-git-dir repo))
          (index (coerce (read-index git-dir) 'list)))
     (dolist (rel paths)
-      (let ((abs (merge-pathnames rel (repo-path repo))))
+      (let ((abs (worktree-path repo rel)))
         (multiple-value-bind (sha mode) (write-blob-from-file repo abs)
           (setf index (cons (stat-index-entry abs rel sha mode)
                             (remove rel index :key #'ie-path :test #'string=))))))

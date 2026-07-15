@@ -48,6 +48,20 @@
   "Is the object named by SHA present in REPO (loose or packed)?"
   (handler-case (progn (read-object repo sha) t) (error () nil)))
 
+(defun worktree-path (repo relpath)
+  "A wildcard-safe absolute pathname for the repo-relative RELPATH (forward
+   slashes).  SBCL parses [ ] * ? in a namestring as glob patterns, so we build
+   the pathname from literal name components instead — real repos have files
+   like `[Content_Types].xml`."
+  (let* ((parts (remove "" (uiop:split-string relpath :separator "/") :test #'string=))
+         (root (repo-path repo)))
+    (make-pathname :directory (append (pathname-directory root) (butlast parts))
+                   :name (car (last parts)) :type nil :defaults root)))
+
+(defun native (pathname)
+  "The OS-native path string (no CL namestring escaping) — for sb-posix calls."
+  (sb-ext:native-namestring pathname))
+
 (defun repo-loaded-packs (repo)
   "The repository's packfiles (opened + cached on first use)."
   (when (eq (repo-packs repo) :unloaded)

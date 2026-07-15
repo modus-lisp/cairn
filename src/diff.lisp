@@ -100,7 +100,7 @@
   (if sha (object-data repo sha) (make-array 0 :element-type '(unsigned-byte 8))))
 
 (defun worktree-bytes (repo path)
-  (let ((abs (merge-pathnames path (repo-path repo))))
+  (let ((abs (worktree-path repo path)))
     (if (probe-file abs) (slurp-bytes abs) (make-array 0 :element-type '(unsigned-byte 8)))))
 
 (defun diff (repo &key cached (stream *standard-output*))

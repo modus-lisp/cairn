@@ -31,15 +31,15 @@
 
 (defun hash-blob-file (path)
   "The blob SHA the working-tree file (or symlink) at PATH would hash to."
-  (let ((st (sb-posix:lstat (namestring path))))
+  (let ((st (sb-posix:lstat (native path))))
     (if (= (logand (sb-posix:stat-mode st) #o170000) #o120000)
-        (hash-object :blob (string->bytes (sb-posix:readlink (namestring path))))
+        (hash-object :blob (string->bytes (sb-posix:readlink (native path))))
         (hash-object :blob (slurp-bytes path)))))
 
 (defun worktree-modified-p (abs entry)
   "Does the file at ABS differ from its index ENTRY?  Fast path on size+mtime,
    else compare the content hash."
-  (let ((st (sb-posix:lstat (namestring abs))))
+  (let ((st (sb-posix:lstat (native abs))))
     (if (and (= (logand (sb-posix:stat-size st) #xffffffff) (logand (ie-size entry) #xffffffff))
              (= (logand (sb-posix:stat-mtime st) #xffffffff) (logand (ie-mtime entry) #xffffffff)))
         nil
@@ -86,7 +86,7 @@
              head)
     ;; unstaged: worktree vs index
     (maphash (lambda (path e)
-               (let ((abs (merge-pathnames path (repo-path repo))))
+               (let ((abs (worktree-path repo path)))
                  (cond ((not (probe-file abs)) (push (cons path :deleted) unstaged))
                        ((worktree-modified-p abs e) (push (cons path :modified) unstaged)))))
              index-map)
