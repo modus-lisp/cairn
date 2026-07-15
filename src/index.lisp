@@ -10,7 +10,7 @@
 (in-package #:cairn)
 
 (defstruct (index-entry (:conc-name ie-))
-  ctime mtime dev ino mode uid gid size sha path)
+  ctime mtime dev ino mode uid gid size sha path (stage 0))
 
 ;;; git index mode = 4-bit object type + 9-bit unix perms.
 (defun tree-mode->index-mode (tree-mode)
@@ -45,6 +45,7 @@
                (gid (be32 buf (+ pos 32))) (size (be32 buf (+ pos 36)))
                (sha (bytes->hex (subseq buf (+ pos 40) (+ pos 60))))
                (flags (logior (ash (aref buf (+ pos 60)) 8) (aref buf (+ pos 61))))
+               (stage (logand (ash flags -12) 3))
                (namelen (logand flags #xfff))
                (name-start (+ pos 62))
                (name-end (if (= namelen #xfff)
@@ -53,15 +54,19 @@
           (setf (aref entries i)
                 (make-index-entry :ctime ctime :mtime mtime :dev dev :ino ino
                                   :mode mode :uid uid :gid gid :size size :sha sha
-                                  :path (ascii (subseq buf name-start name-end))))
+                                  :stage stage :path (ascii (subseq buf name-start name-end))))
           ;; advance past the entry, padded so its length is a multiple of 8
           (let ((len (- name-end start)))
             (setf pos (+ start (logand (+ len 8) (lognot 7)))))))
       entries)))
 
 (defun write-index (git-dir entries)
-  "Write ENTRIES (a sequence of INDEX-ENTRY) as a v2 .git/index."
-  (let ((sorted (sort (coerce entries 'list) #'string< :key #'ie-path))
+  "Write ENTRIES (a sequence of INDEX-ENTRY) as a v2 .git/index.  Entries sort by
+   path then stage, so conflict stages (1/2/3) sit together under their path."
+  (let ((sorted (sort (coerce entries 'list)
+                      (lambda (a b) (or (string< (ie-path a) (ie-path b))
+                                        (and (string= (ie-path a) (ie-path b))
+                                             (< (ie-stage a) (ie-stage b)))))))
         (buf (byte-buffer)))
     (push-bytes buf (string->bytes "DIRC"))
     (%push-be32 buf 2)
@@ -78,7 +83,7 @@
         (%push-be32 buf (ie-gid e))
         (%push-be32 buf (logand (ie-size e) #xffffffff))
         (push-bytes buf (hex->bytes (ie-sha e)))
-        (%push-be16 buf (min (length name) #xfff))
+        (%push-be16 buf (logior (ash (ie-stage e) 12) (min (length name) #xfff)))
         (push-bytes buf name)
         (let* ((len (- (fill-pointer buf) start))
                (pad (- (logand (+ len 8) (lognot 7)) len)))

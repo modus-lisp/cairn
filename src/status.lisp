@@ -61,36 +61,46 @@
     (nreverse out)))
 
 (defun status (repo)
-  "Return (values STAGED UNSTAGED UNTRACKED).  STAGED/UNSTAGED are alists of
-   (path . :added/:modified/:deleted); UNTRACKED is a list of paths."
+  "Return (values STAGED UNSTAGED UNTRACKED UNMERGED).  STAGED/UNSTAGED are
+   alists of (path . :added/:modified/:deleted); UNTRACKED and UNMERGED are lists
+   of paths (UNMERGED = paths with conflict stages recorded by a merge)."
   (let* ((index (read-index (repo-git-dir repo)))
          (index-map (make-hash-table :test 'equal))
          (head (head-tree-map repo))
+         (unmerged '())
          (staged '()) (unstaged '()) (untracked '()))
-    (loop for e across index do (setf (gethash (ie-path e) index-map) e))
-    ;; staged: index vs HEAD
     (loop for e across index do
-      (let ((h (gethash (ie-path e) head)))
-        (cond ((null h) (push (cons (ie-path e) :added) staged))
-              ((not (string= h (ie-sha e))) (push (cons (ie-path e) :modified) staged)))))
+      (if (plusp (ie-stage e))
+          (pushnew (ie-path e) unmerged :test #'string=)
+          (setf (gethash (ie-path e) index-map) e)))
+    ;; staged: index vs HEAD (stage-0 entries only)
+    (maphash (lambda (path e)
+               (let ((h (gethash path head)))
+                 (cond ((null h) (push (cons path :added) staged))
+                       ((not (string= h (ie-sha e))) (push (cons path :modified) staged)))))
+             index-map)
     (maphash (lambda (path sha) (declare (ignore sha))
-               (unless (gethash path index-map) (push (cons path :deleted) staged)))
+               (unless (or (gethash path index-map) (member path unmerged :test #'string=))
+                 (push (cons path :deleted) staged)))
              head)
     ;; unstaged: worktree vs index
-    (loop for e across index do
-      (let ((abs (merge-pathnames (ie-path e) (repo-path repo))))
-        (cond ((not (probe-file abs)) (push (cons (ie-path e) :deleted) unstaged))
-              ((worktree-modified-p abs e) (push (cons (ie-path e) :modified) unstaged)))))
+    (maphash (lambda (path e)
+               (let ((abs (merge-pathnames path (repo-path repo))))
+                 (cond ((not (probe-file abs)) (push (cons path :deleted) unstaged))
+                       ((worktree-modified-p abs e) (push (cons path :modified) unstaged)))))
+             index-map)
     ;; untracked
     (dolist (path (walk-worktree repo))
-      (unless (gethash path index-map) (push path untracked)))
+      (unless (or (gethash path index-map) (member path unmerged :test #'string=))
+        (push path untracked)))
     (values (sort staged #'string< :key #'car)
             (sort unstaged #'string< :key #'car)
-            (sort untracked #'string<))))
+            (sort untracked #'string<)
+            (sort unmerged #'string<))))
 
 (defun print-status (repo &optional (stream *standard-output*))
   "A git-style status summary."
-  (multiple-value-bind (staged unstaged untracked) (status repo)
+  (multiple-value-bind (staged unstaged untracked unmerged) (status repo)
     (multiple-value-bind (kind ref) (head-ref repo)
       (format stream "On ~a~%" (if (eq kind :symbolic)
                                    (format nil "branch ~a" (subseq ref (1+ (or (position #\/ ref :from-end t) -1))))
@@ -99,11 +109,13 @@
              (when rows
                (format stream "~%~a:~%" title)
                (dolist (r rows) (funcall fmt r)))))
+      (section "Unmerged paths" unmerged
+               (lambda (p) (format stream "  both modified: ~a~%" p)))
       (section "Changes to be committed" staged
                (lambda (r) (format stream "  ~9a ~a~%" (string-downcase (cdr r)) (car r))))
       (section "Changes not staged for commit" unstaged
                (lambda (r) (format stream "  ~9a ~a~%" (string-downcase (cdr r)) (car r))))
       (section "Untracked files" untracked
                (lambda (p) (format stream "  ~a~%" p)))
-      (when (and (null staged) (null unstaged) (null untracked))
+      (when (and (null staged) (null unstaged) (null untracked) (null unmerged))
         (format stream "~%nothing to commit, working tree clean~%")))))

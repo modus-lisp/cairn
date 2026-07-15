@@ -2,13 +2,15 @@
 
 (defpackage #:cairn
   (:use #:cl)
+  (:shadow #:merge)                     ; cairn:merge is git merge, not cl:merge
   (:documentation
    "cairn — a git implementation in pure Common Lisp.  A cairn is a trail marker
     built one stone at a time; a git history is the same — each commit a stone,
     the chain of them marking where the work has been.  Clean-room: the object
-    model, the loose/packed object stores, refs, the index, and (later) the pack
-    transfer protocol, all from scratch.  No libgit2, no shelling out to git, no
-    FFI.  Its own SHA-1 (git's content-address hash) and its own DEFLATE.")
+    model, the loose/packed object stores, refs, the index, add/commit, checkout,
+    status/diff/merge, and the smart transfer protocol over HTTPS (seal) and SSH
+    (conch), all from scratch.  No libgit2, no libcurl, no shelling out to git,
+    no FFI.  SHA-1 from seal, DEFLATE from chipz/salza2.")
   (:export
    ;; hashing / compression primitives
    #:sha1 #:sha1-hex #:zlib-decompress #:zlib-compress #:inflate #:deflate
@@ -34,4 +36,7 @@
    #:write-packfile #:objects-to-send #:reachable-objects
    #:clone-ssh #:push-ssh #:parse-ssh-url
    ;; fetch / pull
-   #:fetch #:pull #:remote-url))
+   #:fetch #:pull #:remote-url
+   ;; merge (three-way; conflict handling via *merge-resolver*)
+   #:merge #:merge-base #:diff3-merge #:*merge-resolver*
+   #:*merge-ours-label* #:*merge-theirs-label*))

@@ -50,6 +50,12 @@ natrium**. No OpenSSL, no libcurl, no libssh; the whole stack is Common Lisp.
 ;; --- fetch new objects and fast-forward ---
 (cairn:fetch r)                                          ; url from the origin remote
 (cairn:pull r :identity "~/.ssh/id_ed25519")             ; fetch + fast-forward + checkout
+
+;; --- three-way merge (canonical git; conflict handling is pluggable) ---
+(cairn:merge r "refs/heads/feature")                     ; merge commit, or git-style conflict markers
+(let ((cairn:*merge-resolver*                            ; swap in a smarter strategy…
+        (lambda (ours base theirs) (declare (ignore base theirs)) (values ours nil))))
+  (cairn:merge r "refs/heads/feature"))                  ; …e.g. always-take-ours, resolves cleanly
 ```
 
 ## Conformance
@@ -71,6 +77,10 @@ agrees — the strongest test available:
 - **Push** and **pull** round-trip through a real `git` server: after a push the
   remote's HEAD is cairn's commit and `git fsck` is clean; an incremental fetch
   transfers only the new objects and fast-forwards cleanly.
+- **Merge** matches git: a clean three-way merge produces a tree byte-identical
+  to `git merge`'s (same two parents); a conflict produces identical
+  `<<<<<<<`/`=======`/`>>>>>>>` markers and an unmerged index (stages 1/2/3) that
+  `git status` reads as `UU`.
 
 The `inspect/` scripts reproduce each of these.
 
@@ -82,8 +92,9 @@ CRC-32 and byte helpers) · `objects` (blob/tree/commit/tag) · `refs` ·
 (cat-file/log/ls-tree) · `write` (the loose-object store) · `index` (the DIRC
 staging area) · `index-pack` (turn a received pack into a stored one) ·
 `pack-write` (build a pack to send) · `checkout` · `commit` (add/write-tree/
-commit) · `status` · `diff` · `pktline` · `http` (a minimal HTTPS client on
-seal) · `clone` · `ssh` (git over a conch channel) · `fetch`.
+commit) · `status` · `diff` · `merge` (three-way, diff3, pluggable resolver) ·
+`pktline` · `http` (a minimal HTTPS client on seal) · `clone` · `ssh` (git over a
+conch channel) · `fetch`.
 
 The ecosystem underneath: **natrium** is the constant-time modern crypto floor;
 **seal** is a pure-CL TLS 1.3 client (and the home of the classical hashes);
@@ -92,19 +103,25 @@ each library built so the next could exist.
 
 ## Not yet
 
-A real merge (`pull` is fast-forward-only), HTTP push (needs credential auth; SSH
-push works), delta compression in *written* packs (they're correct but larger
-than git's), SHA-256 repositories, the commit-graph, and shallow/partial clone.
-Contributions welcome.
+`pull` is fast-forward-only (the three-way `merge` is there; wiring it into pull
+is the remaining step), and `merge` finds a single merge base — the recursive
+merge of multiple bases (criss-cross histories) is future work. Also: HTTP push
+(needs credential auth; SSH push works), delta compression in *written* packs
+(they're correct but larger than git's), SHA-256 repositories, the commit-graph,
+and shallow/partial clone. Contributions welcome.
+
+The conflict resolver is a single seam — bind `*merge-resolver*` to change how
+regions both sides edited are reconciled (the default reproduces git's markers).
 
 ## Running the tests
 
 The `inspect/` scripts each load the system and check a layer against real `git`:
 `verify-objects.lisp` (read + re-hash any repo), `clone.lisp` (clone over HTTPS),
 `commit.lisp` (clone → edit → commit → `git fsck`), `status-diff.lisp` (next to
-`git status`/`git diff`), `ssh.lisp` (clone + push over a local `sshd`), and
-`fetch.lisp` (incremental fetch + fast-forward pull). The SSH scripts need a
-local `sshd`; setup is in each file's header comment.
+`git status`/`git diff`), `merge.lisp` (clean + conflict merge vs `git merge`),
+`ssh.lisp` (clone + push over a local `sshd`), and `fetch.lisp` (incremental
+fetch + fast-forward pull). The SSH scripts need a local `sshd`; setup is in each
+file's header comment.
 
 MIT. Research / educational; **not audited** — do not trust it with anything that
 matters without an independent review.
