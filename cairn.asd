@@ -18,5 +18,6 @@ DEFLATE.  No libgit2, no shelling out to git, no FFI."
      (:file "inflate")
      (:file "objects")
      (:file "refs")
+     (:file "pack")
      (:file "repository")
      (:file "plumbing")))))

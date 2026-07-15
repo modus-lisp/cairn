@@ -2,7 +2,7 @@
 
 (in-package #:cairn)
 
-(defstruct (repository (:conc-name repo-)) path git-dir)
+(defstruct (repository (:conc-name repo-)) path git-dir (packs :unloaded))
 
 (defun open-repository (path)
   "Open the git repository at PATH (which must contain a .git directory, or be a
@@ -33,7 +33,19 @@
 (defun object-type (repo sha) (values (read-object repo sha)))
 (defun object-data (repo sha) (nth-value 1 (read-object repo sha)))
 
-;;; packfiles arrive in the next phase; until then loose objects only.
+(defun repo-loaded-packs (repo)
+  "The repository's packfiles (opened + cached on first use)."
+  (when (eq (repo-packs repo) :unloaded)
+    (let ((pack-dir (merge-pathnames "objects/pack/" (repo-git-dir repo))))
+      (setf (repo-packs repo)
+            (when (uiop:directory-exists-p pack-dir)
+              (loop for p in (uiop:directory-files pack-dir)
+                    when (string= (pathname-type p) "idx")
+                      collect (open-pack p))))))
+  (repo-packs repo))
+
 (defun read-pack-object (repo sha)
-  (declare (ignore repo))
-  (error "cairn: object ~a not found as a loose object (packfiles not yet supported)" sha))
+  (dolist (pack (repo-loaded-packs repo)
+                (error "cairn: object ~a not found (loose or packed)" sha))
+    (let ((offset (pack-find-offset pack sha)))
+      (when offset (return (pack-read-at pack offset repo))))))
