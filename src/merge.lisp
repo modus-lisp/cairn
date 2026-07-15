@@ -236,3 +236,27 @@
                (finish-conflicted-merge repo result conflicts theirs theirs-label)
                (finish-clean-merge repo (write-tree-from-map repo result)
                                    ours theirs theirs-label message author committer))))))))
+
+;;; ---- pull (fetch + merge) ---------------------------------------------------
+
+(defun pull (repo &key url identity message
+                       (author "cairn <cairn@localhost>") (committer author))
+  "git pull = fetch + merge: fetch the upstream branch, then merge it into the
+   current branch — fast-forward when possible, otherwise a three-way merge
+   (a clean merge makes a merge commit; a conflict is left in the tree with
+   markers + an unmerged index, exactly as git leaves it)."
+  (fetch repo :url url :identity identity)
+  (multiple-value-bind (kind ref) (head-ref repo)
+    (unless (eq kind :symbolic) (error "cairn: detached HEAD, cannot pull"))
+    (let* ((branch (subseq ref (length "refs/heads/")))   ; full branch path, nested ok
+           (remote-sha (read-ref-file repo (format nil "refs/remotes/origin/~a" branch))))
+      (cond
+        ((null remote-sha) (format t "~&no upstream for ~a~%" branch) nil)
+        ((null (ignore-errors (head-commit repo)))            ; unborn branch: adopt upstream
+         (update-ref repo ref remote-sha) (checkout repo remote-sha) remote-sha)
+        (t (merge repo remote-sha
+                  :theirs-label (format nil "origin/~a" branch)
+                  :message (or message
+                               (format nil "Merge branch '~a' of ~a into ~a"
+                                       branch (or url (remote-url repo) "origin") branch))
+                  :author author :committer committer))))))

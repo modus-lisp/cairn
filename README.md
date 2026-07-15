@@ -49,7 +49,7 @@ natrium**. No OpenSSL, no libcurl, no libssh; the whole stack is Common Lisp.
 
 ;; --- fetch new objects and fast-forward ---
 (cairn:fetch r)                                          ; url from the origin remote
-(cairn:pull r :identity "~/.ssh/id_ed25519")             ; fetch + fast-forward + checkout
+(cairn:pull r :identity "~/.ssh/id_ed25519")             ; fetch + merge (ff or three-way)
 
 ;; --- three-way merge (canonical git; conflict handling is pluggable) ---
 (cairn:merge r "refs/heads/feature")                     ; merge commit, or git-style conflict markers
@@ -80,7 +80,9 @@ agrees — the strongest test available:
 - **Merge** matches git: a clean three-way merge produces a tree byte-identical
   to `git merge`'s (same two parents); a conflict produces identical
   `<<<<<<<`/`=======`/`>>>>>>>` markers and an unmerged index (stages 1/2/3) that
-  `git status` reads as `UU`.
+  `git status` reads as `UU`. **Pull** is fetch + merge — a divergent pull
+  three-way-merges (tree byte-identical to a pure-git reproduction) or leaves
+  git-identical conflict markers labelled `origin/<branch>`.
 
 The `inspect/` scripts reproduce each of these.
 
@@ -103,12 +105,11 @@ each library built so the next could exist.
 
 ## Not yet
 
-`pull` is fast-forward-only (the three-way `merge` is there; wiring it into pull
-is the remaining step), and `merge` finds a single merge base — the recursive
-merge of multiple bases (criss-cross histories) is future work. Also: HTTP push
-(needs credential auth; SSH push works), delta compression in *written* packs
-(they're correct but larger than git's), SHA-256 repositories, the commit-graph,
-and shallow/partial clone. Contributions welcome.
+`merge` (and so `pull`) finds a single merge base — the recursive merge of
+multiple bases (criss-cross histories) is future work. Also: HTTP push (needs
+credential auth; SSH push works), delta compression in *written* packs (they're
+correct but larger than git's), SHA-256 repositories, the commit-graph, and
+shallow/partial clone. Contributions welcome.
 
 The conflict resolver is a single seam — bind `*merge-resolver*` to change how
 regions both sides edited are reconciled (the default reproduces git's markers).

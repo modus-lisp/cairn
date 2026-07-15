@@ -132,22 +132,4 @@
                    (error () nil))))))
     nil))
 
-(defun pull (repo &key url identity)
-  "Fetch, then fast-forward the current branch to its upstream and check it out.
-   Errors on a non-fast-forward (no merge)."
-  (fetch repo :url url :identity identity)
-  (multiple-value-bind (kind ref) (head-ref repo)
-    (unless (eq kind :symbolic) (error "cairn: detached HEAD, cannot pull"))
-    (let* ((branch (subseq ref 11))
-           (remote-sha (read-ref-file repo (format nil "refs/remotes/origin/~a" branch)))
-           (local-sha (ignore-errors (head-commit repo))))
-      (cond
-        ((null remote-sha) (format t "~&no upstream for ~a~%" branch) nil)
-        ((and local-sha (string= local-sha remote-sha)) (format t "~&already up to date~%") local-sha)
-        ((or (null local-sha) (ancestor-p repo local-sha remote-sha))
-         (update-ref repo ref remote-sha)
-         (let ((n (checkout repo remote-sha)))
-           (format t "~&fast-forward ~a -> ~a  (~d files)~%"
-                   (if local-sha (short local-sha) "(new)") (short remote-sha) n))
-         remote-sha)
-        (t (error "cairn: non-fast-forward for ~a; merge not implemented" branch))))))
+;; pull lives in merge.lisp — it is fetch + merge, and merge loads after fetch.
