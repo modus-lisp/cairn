@@ -4,12 +4,12 @@
   :description "A clean-room git in pure Common Lisp: the object model, loose and
 packed object stores, refs, the index, add/commit, checkout, and clone over
 smart HTTP.  SHA-1 comes from the sibling `seal` (the classical-crypto home),
-DEFLATE from `chipz`/`salza2` (pure-CL inflate/deflate), TLS from `seal` — no
+DEFLATE from `cram` (pure-CL zlib codec), TLS from `seal` — no
 libgit2, no libcurl, no shelling out to git, no FFI."
   :version "0.0.1"
   :author "ynniv"
   :license "MIT"
-  :depends-on ("seal" "conch" "chipz" "salza2" "sb-posix")
+  :depends-on ("seal" "conch" "cram" "sb-posix")
   :serial t
   :components
   ((:module "src"

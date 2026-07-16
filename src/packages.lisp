@@ -10,7 +10,7 @@
     model, the loose/packed object stores, refs, the index, add/commit, checkout,
     status/diff/merge, and the smart transfer protocol over HTTPS (seal) and SSH
     (conch), all from scratch.  No libgit2, no libcurl, no shelling out to git,
-    no FFI.  SHA-1 from seal, DEFLATE from chipz/salza2.")
+    no FFI.  SHA-1 from seal, DEFLATE from cram.")
   (:export
    ;; hashing / compression primitives
    #:sha1 #:sha1-hex #:zlib-decompress #:zlib-compress #:inflate #:deflate

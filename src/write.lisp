@@ -2,7 +2,7 @@
 ;;;;
 ;;;; The mirror of read-object: take a type and content, prepend git's
 ;;;; "<type> <size>\0" header, and the SHA-1 of that is the object id.  Store it
-;;;; zlib-compressed (salza2) at objects/xx/yyyy…, unless it is already present
+;;;; zlib-compressed (cram) at objects/xx/yyyy…, unless it is already present
 ;;;; (objects are immutable and content-addressed, so a matching id is a no-op).
 
 (in-package #:cairn)

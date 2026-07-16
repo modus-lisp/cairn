@@ -3,7 +3,7 @@
 ;;;; git's two workhorses are SHA-1 (content addressing) and DEFLATE (object
 ;;;; storage).  Neither is cairn's to reinvent: SHA-1 lives in `seal`, the
 ;;;; classical-crypto home (git relies on it as a hash, not for collision
-;;;; resistance); DEFLATE is `chipz`, a pure-Common-Lisp inflate — no FFI, no
+;;;; resistance); DEFLATE is `cram`, a pure-Common-Lisp zlib codec — no FFI, no
 ;;;; zlib.  Here we only adapt them to cairn's shapes (hex ids, a start offset
 ;;;; for packfile streams) and keep the small byte helpers.
 
@@ -54,17 +54,17 @@
              (bytes->hex (seal:sha1-final s))))
     (:sha256 (bytes->hex (seal:sha256 (apply #'concatenate 'u8v parts))))))
 
-;;; --- DEFLATE / zlib (from chipz) -----------------------------------------
+;;; --- DEFLATE / zlib (from cram) ------------------------------------------
 
 (defun inflate (data &optional (start 0))
   "Raw DEFLATE (RFC 1951) decompress of DATA beginning at byte START."
-  (chipz:decompress nil 'chipz:deflate data :input-start start))
+  (values (cram:deflate-decompress data :start start)))
 
 (defun zlib-decompress (data &optional (start 0))
   "zlib (RFC 1950) decompress of DATA beginning at byte START.  Loose objects
-   pass START 0; packfile objects pass the offset of their zlib stream — chipz
+   pass START 0; packfile objects pass the offset of their zlib stream — cram
    stops at the stream's end, so no explicit length is needed."
-  (chipz:decompress nil 'chipz:zlib data :input-start start))
+  (values (cram:zlib-decompress data :start start)))
 
 ;;; --- CRC-32 (IEEE, for packfile .idx v2) ---------------------------------
 
@@ -88,14 +88,14 @@
                       (aref *crc32-table* (logand (logxor c (aref bytes i)) #xff)))))
     (logxor c #xffffffff)))
 
-;;; The compress side is salza2 — chipz's pure-Common-Lisp sibling.
+;;; The compress side is cram too (fixed-Huffman + LZ77; standard zlib output).
 (defun deflate (bytes)
   "Raw DEFLATE (RFC 1951) compress of BYTES."
-  (salza2:compress-data (coerce bytes 'u8v) 'salza2:deflate-compressor))
+  (cram:deflate-compress (coerce bytes 'u8v)))
 
 (defun zlib-compress (bytes)
   "zlib (RFC 1950) compress of BYTES — how git stores a loose object."
-  (salza2:compress-data (coerce bytes 'u8v) 'salza2:zlib-compressor))
+  (cram:zlib-compress (coerce bytes 'u8v)))
 
 ;;; --- byte-buffer + file helpers (shared by the pack/index writers) -----------
 

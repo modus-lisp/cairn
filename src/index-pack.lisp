@@ -3,7 +3,7 @@
 ;;;; A fetched pack arrives with no index: just PACK, a version, an object
 ;;;; count, then that many zlib streams (some of them deltas against earlier
 ;;;; objects), and a trailing SHA-1 of the whole thing.  To store it the way
-;;;; git does, we scan it once — chipz tells us where each zlib stream ends, so
+;;;; git does, we scan it once — cram tells us where each zlib stream ends, so
 ;;;; we can find object boundaries — recording each object's extent and CRC but
 ;;;; keeping *no* content; then we resolve deltas with a depth-first walk of the
 ;;;; delta tree, holding only the objects on the current root-to-leaf path.  So
@@ -27,12 +27,10 @@
   "Inflate the zlib stream in DATA starting at POS, known to expand to
    UNCOMPRESSED-SIZE bytes.  Returns (values CONTENT BYTES-CONSUMED) — the
    consumed count locates the next object in the pack."
-  (let* ((out (make-array uncompressed-size :element-type '(unsigned-byte 8)))
-         (state (chipz:make-dstate 'chipz:zlib)))
-    (multiple-value-bind (consumed produced) (chipz:decompress out state data :input-start pos)
-      (unless (= produced uncompressed-size)
-        (error "cairn: pack object inflated to ~d, header said ~d" produced uncompressed-size))
-      (values out consumed))))
+  (multiple-value-bind (content end) (cram:zlib-decompress data :start pos)
+    (unless (= (length content) uncompressed-size)
+      (error "cairn: pack object inflated to ~d, header said ~d" (length content) uncompressed-size))
+    (values content (- end pos))))          ; consumed is relative to POS (see :end (+ pos consumed))
 
 (defun inflate-payload (data o)
   "The object's own payload — base content, or a delta's instruction stream."
