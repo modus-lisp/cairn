@@ -67,7 +67,7 @@
 
 (let* ((pack (cairn:write-packfile *host* *shas*))
        (fs (cabinet:format-fs *pt*))
-       (cab (cairn:open-cabinet-repository fs :root "/r.git" :init t)))
+       (cab (cairn:open-cabinet-repository fs :root "/r.git" :bare t :init t)))
   (format t "built pack: ~d bytes; writing it into the cabinet…~%" (length pack))
   (cairn:index-pack cab pack)
   (cairn:update-ref cab "refs/heads/master" *head*)
@@ -78,7 +78,7 @@
 ;;; ---- persistence: reopen the pagetree file and re-verify --------------------
 (format t "~%[persistence] remount the pagetree file, re-verify~%")
 (let* ((fs (cabinet:mount *pt*))
-       (cab (cairn:open-cabinet-repository fs :root "/r.git")))
+       (cab (cairn:open-cabinet-repository fs :root "/r.git" :bare t)))
   (verify-store cab "remount")
 
   ;; ---- [3] real-git bridge: materialize out to a host dir, git fsck ----------

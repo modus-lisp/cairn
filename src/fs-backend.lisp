@@ -44,6 +44,41 @@
   "The git-dir-relative path of the loose object named SHA (hex)."
   (format nil "objects/~a/~a" (subseq sha 0 2) (subseq sha 2)))
 
+;;; ---- the working-tree backend ----------------------------------------------
+;;;
+;;; Checkout and status touch the *working tree* — real files with modes and
+;;; symlinks, and the lstat metadata the index records.  That's a distinct,
+;;; differently-rooted surface from the git store, so it's a second vtable held
+;;; in the repository's WORKTREE slot (NIL for a bare repo).  Paths are
+;;; worktree-relative strings.
+
+(defstruct (wt-stat (:conc-name wts-))
+  type (mode 0) (size 0) (mtime 0) (ctime 0) (dev 0) (ino 0) (uid 0) (gid 0))
+  ;; TYPE is :file / :symlink / :dir.  DEV/INO/UID/GID are best-effort — a store
+  ;; without them (cabinet) reports 0; cairn's change-detection leans on size+mtime.
+
+(defstruct (wt-backend (:conc-name wtb-))
+  read-file             ; (rel)              -> bytes           regular file content
+  write-file            ; (rel bytes exec)   -> t               write regular/exec file, mkdir -p
+  make-symlink          ; (rel target)       -> t               create/replace a symlink
+  read-symlink          ; (rel)              -> string          a symlink's target
+  delete-file           ; (rel)              -> t               absent is fine
+  exists-p              ; (rel)              -> boolean         anything present at REL
+  lstat                 ; (rel)              -> (wt-stat | nil) no symlink following
+  walk)                 ; (reldir)           -> (relpath …)     files under reldir, minus .git
+
+(defun repo-wtb (repo)
+  (or (repo-worktree repo) (error "cairn: repository has no working tree (bare?)")))
+
+(defun wt-read-file    (repo rel)          (funcall (wtb-read-file   (repo-wtb repo)) rel))
+(defun wt-write-file   (repo rel bytes exec) (funcall (wtb-write-file (repo-wtb repo)) rel bytes exec))
+(defun wt-make-symlink (repo rel target)   (funcall (wtb-make-symlink (repo-wtb repo)) rel target))
+(defun wt-read-symlink (repo rel)          (funcall (wtb-read-symlink (repo-wtb repo)) rel))
+(defun wt-delete-file  (repo rel)          (funcall (wtb-delete-file (repo-wtb repo)) rel))
+(defun wt-exists-p     (repo rel)          (funcall (wtb-exists-p    (repo-wtb repo)) rel))
+(defun wt-lstat        (repo rel)          (funcall (wtb-lstat       (repo-wtb repo)) rel))
+(defun wt-walk         (repo rel)          (funcall (wtb-walk        (repo-wtb repo)) rel))
+
 ;;; ---- the host filesystem backend (the default) -----------------------------
 
 (defun host-walk-files (dir git-dir)

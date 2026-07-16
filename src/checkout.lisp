@@ -17,8 +17,7 @@
     (dolist (e (parse-tree content))
       (let* ((mode (tree-entry-mode e))
              (name (tree-entry-name e))
-             (relpath (if (string= prefix "") name (concatenate 'string prefix "/" name)))
-             (path (worktree-path repo relpath)))
+             (relpath (if (string= prefix "") name (concatenate 'string prefix "/" name))))
         (cond
           ((string= mode "40000")                        ; subtree
            (write-worktree repo (tree-entry-sha e) relpath entries))
@@ -26,16 +25,13 @@
           ((string= mode "120000")                       ; symlink
            (multiple-value-bind (bt target) (read-object repo (tree-entry-sha e))
              (declare (ignore bt))
-             (ensure-directories-exist path)
-             (uiop:delete-file-if-exists path)
-             (sb-posix:symlink (ascii target) (native path))
-             (vector-push-extend (stat-index-entry path relpath (tree-entry-sha e) mode) entries)))
+             (wt-make-symlink repo relpath (ascii target))
+             (vector-push-extend (stat-index-entry repo relpath (tree-entry-sha e) mode) entries)))
           (t                                             ; regular / executable file
            (multiple-value-bind (bt blob) (read-object repo (tree-entry-sha e))
              (declare (ignore bt))
-             (write-bytes path blob)
-             (when (string= mode "100755") (sb-posix:chmod (native path) #o755))
-             (vector-push-extend (stat-index-entry path relpath (tree-entry-sha e) mode) entries))))))))
+             (wt-write-file repo relpath blob (string= mode "100755"))
+             (vector-push-extend (stat-index-entry repo relpath (tree-entry-sha e) mode) entries))))))))
 
 (defun checkout (repo &optional (commit (head-commit repo)))
   "Materialise COMMIT (default HEAD) into REPO's working directory and write the
@@ -50,6 +46,6 @@
       (loop for e across entries do (setf (gethash (ie-path e) kept) t))
       (loop for e across old
             unless (gethash (ie-path e) kept)
-              do (uiop:delete-file-if-exists (worktree-path repo (ie-path e)))))
+              do (wt-delete-file repo (ie-path e))))
     (write-index repo entries)
     (length entries))))

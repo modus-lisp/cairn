@@ -202,13 +202,11 @@
     (if (eq kind :symbolic) (subseq ref (1+ (or (position #\/ ref :from-end t) -1))) "HEAD")))
 
 (defun write-worktree-file (repo path mode sha)
-  (let ((abs (worktree-path repo path)))
-    (multiple-value-bind (type content) (read-object repo sha)
-      (declare (ignore type))
-      (if (string= mode "120000")
-          (progn (uiop:delete-file-if-exists abs) (sb-posix:symlink (ascii content) (native abs)))
-          (progn (write-bytes abs content)
-                 (when (string= mode "100755") (sb-posix:chmod (native abs) #o755)))))))
+  (multiple-value-bind (type content) (read-object repo sha)
+    (declare (ignore type))
+    (if (string= mode "120000")
+        (wt-make-symlink repo path (ascii content))
+        (wt-write-file repo path content (string= mode "100755")))))
 
 (defun finish-clean-merge (repo tree ours theirs label message author committer)
   (let* ((msg (or message (format nil "Merge ~a into ~a" label (current-branch-name repo))))
@@ -229,8 +227,7 @@
     (maphash (lambda (path ms)
                (write-worktree-file repo path (car ms) (cdr ms))
                (unless (member path cpaths :test #'string=)
-                 (push (stat-index-entry (worktree-path repo path) path (cdr ms) (car ms))
-                       entries)))
+                 (push (stat-index-entry repo path (cdr ms) (car ms)) entries)))
              result)
     ;; conflicted paths as index stages 1 (base) / 2 (ours) / 3 (theirs)
     (dolist (c conflicts)
@@ -243,8 +240,8 @@
                          entries))))
           (stage o 1) (stage a 2) (stage b 3))))
     (write-index repo entries)
-    (write-text-file (merge-pathnames "MERGE_HEAD" (repo-git-dir repo)) (format nil "~a~%" theirs))
-    (write-text-file (merge-pathnames "MERGE_MSG" (repo-git-dir repo))
+    (fs-write-string repo "MERGE_HEAD" (format nil "~a~%" theirs))
+    (fs-write-string repo "MERGE_MSG"
                      (format nil "Merge ~a~%~%# Conflicts:~%~{#\	~a~%~}" label (sort (copy-list cpaths) #'string<)))
     (format t "~&Auto-merging: ~d conflict~:p~%~{CONFLICT (content): Merge conflict in ~a~%~}~
               Automatic merge failed; fix conflicts and then commit the result.~%"

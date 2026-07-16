@@ -29,36 +29,24 @@
         (setf (gethash (car e) map) (cddr e))))
     map))
 
-(defun hash-blob-file (path)
-  "The blob SHA the working-tree file (or symlink) at PATH would hash to."
-  (let ((st (sb-posix:lstat (native path))))
-    (if (= (logand (sb-posix:stat-mode st) #o170000) #o120000)
-        (hash-object :blob (string->bytes (sb-posix:readlink (native path))))
-        (hash-object :blob (slurp-bytes path)))))
+(defun hash-blob-file (repo rel)
+  "The blob SHA the working-tree file (or symlink) at repo-relative REL hashes to."
+  (if (eq (wts-type (wt-lstat repo rel)) :symlink)
+      (hash-object :blob (string->bytes (wt-read-symlink repo rel)))
+      (hash-object :blob (wt-read-file repo rel))))
 
-(defun worktree-modified-p (abs entry)
-  "Does the file at ABS differ from its index ENTRY?  Fast path on size+mtime,
-   else compare the content hash."
-  (let ((st (sb-posix:lstat (native abs))))
-    (if (and (= (logand (sb-posix:stat-size st) #xffffffff) (logand (ie-size entry) #xffffffff))
-             (= (logand (sb-posix:stat-mtime st) #xffffffff) (logand (ie-mtime entry) #xffffffff)))
+(defun worktree-modified-p (repo rel entry)
+  "Does the worktree file at REL differ from its index ENTRY?  Fast path on
+   size+mtime, else compare the content hash."
+  (let ((st (wt-lstat repo rel)))
+    (if (and (= (logand (wts-size st) #xffffffff) (logand (ie-size entry) #xffffffff))
+             (= (logand (wts-mtime st) #xffffffff) (logand (ie-mtime entry) #xffffffff)))
         nil
-        (not (string= (hash-blob-file abs) (ie-sha entry))))))
+        (not (string= (hash-blob-file repo rel) (ie-sha entry))))))
 
 (defun walk-worktree (repo)
   "Repo-relative paths of every file in the working tree, excluding .git."
-  (let ((out '()))
-    (labels ((rel (prefix name) (if (string= prefix "") name
-                                    (concatenate 'string prefix "/" name)))
-             (walk (dir prefix)
-               (dolist (f (uiop:directory-files dir))
-                 (push (rel prefix (file-namestring f)) out))
-               (dolist (d (uiop:subdirectories dir))
-                 (let ((name (car (last (pathname-directory d)))))
-                   (unless (string= name ".git")
-                     (walk d (rel prefix name)))))))
-      (walk (repo-path repo) ""))
-    (nreverse out)))
+  (wt-walk repo ""))
 
 (defun status (repo)
   "Return (values STAGED UNSTAGED UNTRACKED UNMERGED).  STAGED/UNSTAGED are
@@ -86,9 +74,8 @@
              head)
     ;; unstaged: worktree vs index
     (maphash (lambda (path e)
-               (let ((abs (worktree-path repo path)))
-                 (cond ((not (probe-file abs)) (push (cons path :deleted) unstaged))
-                       ((worktree-modified-p abs e) (push (cons path :modified) unstaged)))))
+               (cond ((not (wt-exists-p repo path)) (push (cons path :deleted) unstaged))
+                     ((worktree-modified-p repo path e) (push (cons path :modified) unstaged))))
              index-map)
     ;; untracked
     (dolist (path (walk-worktree repo))

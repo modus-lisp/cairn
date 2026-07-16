@@ -29,10 +29,9 @@
   (with-oid (repo)
   (let* ((index (coerce (read-index repo) 'list)))
     (dolist (rel paths)
-      (let ((abs (worktree-path repo rel)))
-        (multiple-value-bind (sha mode) (write-blob-from-file repo abs)
-          (setf index (cons (stat-index-entry abs rel sha mode)
-                            (remove rel index :key #'ie-path :test #'string=))))))
+      (multiple-value-bind (sha mode) (write-blob-from-file repo rel)
+        (setf index (cons (stat-index-entry repo rel sha mode)
+                          (remove rel index :key #'ie-path :test #'string=)))))
     (write-index repo index)
     paths)))
 

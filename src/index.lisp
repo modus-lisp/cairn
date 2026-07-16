@@ -89,12 +89,14 @@
     (push-bytes buf (oid-digest (subseq buf 0 (fill-pointer buf))))
     (fs-write-bytes repo "index" (coerce buf 'u8v))))
 
-(defun stat-index-entry (path relpath sha mode)
-  "Build an INDEX-ENTRY for the on-disk file PATH (repo-relative RELPATH), whose
-   blob is SHA and tree-mode is the octal string MODE."
-  (let ((st (sb-posix:lstat (native path))))
-    (make-index-entry :ctime (sb-posix:stat-ctime st) :mtime (sb-posix:stat-mtime st)
-                      :dev (sb-posix:stat-dev st) :ino (sb-posix:stat-ino st)
-                      :mode (tree-mode->index-mode mode) :uid (sb-posix:stat-uid st)
-                      :gid (sb-posix:stat-gid st) :size (sb-posix:stat-size st)
-                      :sha sha :path relpath)))
+(defun stat-index-entry (repo relpath sha mode)
+  "Build an INDEX-ENTRY for the worktree file at repo-relative RELPATH, whose blob
+   is SHA and tree-mode is the octal string MODE.  lstat metadata comes through
+   the repository's worktree backend (a store without dev/ino/uid/gid reports 0)."
+  (let ((st (wt-lstat repo relpath)))
+    (flet ((f (reader) (if st (funcall reader st) 0)))
+      (make-index-entry :ctime (f #'wts-ctime) :mtime (f #'wts-mtime)
+                        :dev (f #'wts-dev) :ino (f #'wts-ino)
+                        :mode (tree-mode->index-mode mode) :uid (f #'wts-uid)
+                        :gid (f #'wts-gid) :size (f #'wts-size)
+                        :sha sha :path relpath))))

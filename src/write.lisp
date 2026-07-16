@@ -18,13 +18,11 @@
       (fs-write-bytes repo rel (zlib-compress body)))
     sha)))
 
-(defun write-blob-from-file (repo path)
-  "Read the working-tree file (or symlink) at PATH, write it as a blob, and
-   return (values SHA TREE-MODE) — TREE-MODE is git's octal mode string."
-  (let ((st (sb-posix:lstat (native path))))
-    (if (= (logand (sb-posix:stat-mode st) #o170000) #o120000)   ; S_IFLNK
-        (let ((target (sb-posix:readlink (native path))))
-          (values (write-object repo :blob (string->bytes target)) "120000"))
-        (let* ((bytes (slurp-bytes path))
-               (mode (if (logtest (sb-posix:stat-mode st) #o111) "100755" "100644")))
-          (values (write-object repo :blob bytes) mode)))))
+(defun write-blob-from-file (repo relpath)
+  "Read the working-tree file (or symlink) at repo-relative RELPATH, write it as a
+   blob, and return (values SHA TREE-MODE) — TREE-MODE is git's octal mode string."
+  (let ((st (wt-lstat repo relpath)))
+    (if (eq (wts-type st) :symlink)
+        (values (write-object repo :blob (string->bytes (wt-read-symlink repo relpath))) "120000")
+        (values (write-object repo :blob (wt-read-file repo relpath))
+                (if (logtest (wts-mode st) #o111) "100755" "100644")))))

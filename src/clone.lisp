@@ -113,8 +113,9 @@
    (optionally) check out.  Shared by HTTP and SSH clone.  Returns the repo."
   (let* ((dest (uiop:ensure-directory-pathname dest))
          (git-dir (merge-pathnames ".git/" dest))
-         (repo (make-repository-on-backend (make-host-backend git-dir)
-                                           :path dest :git-dir git-dir))
+         (repo (let ((r (make-repository-on-backend (make-host-backend git-dir)
+                                                    :path dest :git-dir git-dir)))
+                 (setf (repo-worktree r) (make-host-worktree-backend dest)) r))
          (head-target (or head-target
                           (car (find-if (lambda (r) (search "refs/heads/" (car r))) refs))
                           "refs/heads/master")))
