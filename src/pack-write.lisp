@@ -14,21 +14,24 @@
 (defun reachable-objects (repo start-commit &optional (seen (make-hash-table :test 'equal)))
   "Add to SEEN (a sha→type-keyword table) every object reachable from
    START-COMMIT — the commit, its ancestors, and all their trees and blobs.
-   Returns SEEN."
-  (labels ((visit-tree (sha)
+   The commit history is walked with an explicit worklist (not recursion), so a
+   deep linear history — tens of thousands of commits — cannot overflow the
+   stack.  Returns SEEN."
+  (labels ((visit-tree (sha)                             ; tree depth is bounded
              (unless (gethash sha seen)
                (setf (gethash sha seen) :tree)
                (dolist (e (parse-tree (object-data repo sha)))
                  (cond ((string= (tree-entry-mode e) "40000") (visit-tree (tree-entry-sha e)))
                        ((string= (tree-entry-mode e) "160000"))   ; submodule commit: not ours
-                       (t (setf (gethash (tree-entry-sha e) seen) :blob))))))
-           (visit-commit (sha)
-             (when (and sha (not (gethash sha seen)))
-               (setf (gethash sha seen) :commit)
-               (let ((c (parse-commit (object-data repo sha))))
-                 (visit-tree (commit-tree c))
-                 (dolist (p (commit-parents c)) (visit-commit p))))))
-    (visit-commit start-commit))
+                       (t (setf (gethash (tree-entry-sha e) seen) :blob)))))))
+    (let ((queue (list start-commit)))
+      (loop while queue do
+        (let ((sha (pop queue)))
+          (when (and sha (not (gethash sha seen)))
+            (setf (gethash sha seen) :commit)
+            (let ((c (parse-commit (object-data repo sha))))
+              (visit-tree (commit-tree c))
+              (dolist (p (commit-parents c)) (push p queue))))))))
   seen)
 
 (defun objects-to-send (repo new-commit have-commits)
