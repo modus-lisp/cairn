@@ -44,6 +44,16 @@
 (defun oid-nhex   () (ecase *oid* (:sha1 40) (:sha256 64)))
 (defun oid-hex (bytes) (bytes->hex (oid-digest bytes)))
 
+(defun oid-hex-parts (&rest parts)
+  "Hex object id of the concatenation of PARTS (byte vectors) under *oid* —
+   streamed for SHA-1, so the parts (git's header + content) are never copied
+   into one buffer.  This is the object-hashing hot path during a clone."
+  (ecase *oid*
+    (:sha1 (let ((s (seal:sha1-init)))
+             (dolist (p parts) (seal:sha1-update s p))
+             (bytes->hex (seal:sha1-final s))))
+    (:sha256 (bytes->hex (seal:sha256 (apply #'concatenate 'u8v parts))))))
+
 ;;; --- DEFLATE / zlib (from chipz) -----------------------------------------
 
 (defun inflate (data &optional (start 0))

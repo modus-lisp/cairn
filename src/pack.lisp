@@ -94,12 +94,14 @@
                      while (logtest b #x80))
                v)))
       (varint)                                                 ; base size (unused)
-      (let ((out (make-array (varint) :element-type '(unsigned-byte 8) :fill-pointer 0)))
+      (let ((out (make-array (varint) :element-type '(unsigned-byte 8)))
+            (o 0))                                             ; write cursor into OUT
+        (declare (type fixnum o))
         (loop while (< i n) do
           (let ((op (aref delta i)))
             (incf i)
             (cond
-              ((logtest op #x80)                               ; copy from base
+              ((logtest op #x80)                               ; copy a run from BASE
                (let ((off 0) (len 0))
                  (when (logtest op #x01) (setf off (logior off (aref delta i))) (incf i))
                  (when (logtest op #x02) (setf off (logior off (ash (aref delta i) 8))) (incf i))
@@ -109,8 +111,10 @@
                  (when (logtest op #x20) (setf len (logior len (ash (aref delta i) 8))) (incf i))
                  (when (logtest op #x40) (setf len (logior len (ash (aref delta i) 16))) (incf i))
                  (when (zerop len) (setf len #x10000))
-                 (dotimes (j len) (vector-push (aref base (+ off j)) out))))
-              ((plusp op)                                      ; insert literal
-               (dotimes (j op) (vector-push (aref delta i) out) (incf i)))
+                 (replace out base :start1 o :start2 off :end2 (+ off len))
+                 (incf o len)))
+              ((plusp op)                                      ; insert a literal run
+               (replace out delta :start1 o :start2 i :end2 (+ i op))
+               (incf o op) (incf i op))
               (t (error "cairn: invalid delta opcode 0")))))
-        (coerce out '(simple-array (unsigned-byte 8) (*)))))))
+        out))))

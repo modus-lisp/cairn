@@ -44,9 +44,9 @@
 
 (defun hash-object (type content)
   "The git object id (hex) of an object of TYPE with CONTENT bytes, under the
-   active object format (*oid*)."
-  (oid-hex (concatenate '(simple-array (unsigned-byte 8) (*))
-                        (object-header type content) content)))
+   active object format (*oid*).  Streams the header then the content into the
+   hash, so nothing is copied into a combined buffer."
+  (oid-hex-parts (object-header type content) content))
 
 ;;; ---- commit -----------------------------------------------------------------
 (defstruct commit tree parents author committer message)

@@ -14,7 +14,16 @@
 
 (in-package #:cairn)
 
-(defstruct pobj offset end kind type size payload-off base-off base-sha sha sha-bytes crc)
+(defvar *index-pack-threads*
+  (or (ignore-errors
+        (parse-integer (string-trim '(#\Newline #\Space)
+                                    (uiop:run-program "nproc" :output :string))))
+      4)
+  "Worker threads for parallel delta resolution in index-pack.  The independent
+   base subtrees are fanned across this many threads (defaults to the core
+   count).  Small packs resolve single-threaded regardless.")
+
+(defstruct pobj offset end kind type size payload-off base-off base-sha sha sha-bytes crc raw)
 
 (defun inflate-at (data pos uncompressed-size)
   "Inflate the zlib stream in DATA starting at POS, known to expand to
@@ -41,23 +50,23 @@
     (loop while (logtest b #x80) do
       (setf b (aref data pos)) (incf pos)
       (setf size (logior size (ash (logand b #x7f) shift))) (incf shift 7))
-    (ecase type
-      ((1 2 3 4)
-       (make-pobj :offset start :end (+ pos (nth-value 1 (inflate-at data pos size)))
-                  :kind :base :type type :size size :payload-off pos))
-      (6                                                   ; ofs-delta
-       (let ((base-rel (logand (aref data pos) #x7f)))
-         (loop while (logtest (aref data pos) #x80) do
+    (flet ((pobj (&rest args)                              ; inflate the payload once, keep it
+             (multiple-value-bind (content consumed) (inflate-at data pos size)
+               (apply #'make-pobj :offset start :end (+ pos consumed) :size size
+                      :payload-off pos :raw content args))))
+      (ecase type
+        ((1 2 3 4) (pobj :kind :base :type type))
+        (6                                                 ; ofs-delta
+         (let ((base-rel (logand (aref data pos) #x7f)))
+           (loop while (logtest (aref data pos) #x80) do
+             (incf pos)
+             (setf base-rel (logior (ash (1+ base-rel) 7) (logand (aref data pos) #x7f))))
            (incf pos)
-           (setf base-rel (logior (ash (1+ base-rel) 7) (logand (aref data pos) #x7f))))
-         (incf pos)
-         (make-pobj :offset start :end (+ pos (nth-value 1 (inflate-at data pos size)))
-                    :kind :ofs-delta :base-off (- start base-rel) :size size :payload-off pos)))
-      (7                                                   ; ref-delta
-       (let ((base-sha (bytes->hex (subseq data pos (+ pos (oid-nbytes))))))
-         (incf pos (oid-nbytes))
-         (make-pobj :offset start :end (+ pos (nth-value 1 (inflate-at data pos size)))
-                    :kind :ref-delta :base-sha base-sha :size size :payload-off pos))))))
+           (pobj :kind :ofs-delta :base-off (- start base-rel))))
+        (7                                                 ; ref-delta
+         (let ((base-sha (bytes->hex (subseq data pos (+ pos (oid-nbytes))))))
+           (incf pos (oid-nbytes))
+           (pobj :kind :ref-delta :base-sha base-sha)))))))
 
 (defun index-pack-objects (data &optional repo)
   "Walk packfile DATA, resolve all deltas, and return a vector of POBJ with
@@ -80,10 +89,9 @@
          (children (make-hash-table))                       ; base offset -> child indices
          (pos 12))
     ;; pass 1 — scan boundaries + CRC, retaining no content
-    (dotimes (i n)
+    (dotimes (i n)                                            ; CRC deferred to the parallel phase
       (let ((o (scan-pack-object data pos)))
-        (setf (pobj-crc o) (crc32 data (pobj-offset o) (pobj-end o))
-              (aref objs i) o
+        (setf (aref objs i) o
               (gethash (pobj-offset o) by-offset) o
               pos (pobj-end o))
         (when (eq (pobj-kind o) :ofs-delta)
@@ -91,46 +99,73 @@
     (let ((trailer (subseq data pos (+ pos (oid-nbytes)))))
       (unless (equalp trailer (oid-digest (subseq data 0 pos)))
         (error "cairn: pack checksum mismatch")))
-    (labels ((finish (o type content)
+    ;; ---- resolve deltas ------------------------------------------------------
+    ;; Each base object's delta subtree is independent, so we fan the subtrees
+    ;; across a worker pool: a worker inflates a base, hashes it, and pushes its
+    ;; content down to its ofs-delta children (apply-delta) recursively.  During
+    ;; this phase workers only READ the shared scan tables and write their own
+    ;; objects' fields — no shared writes, no locks — so it scales across cores.
+    (labels ((resolve-subtree (o type content)
                (setf (pobj-type o) type
+                     (pobj-crc o) (crc32 data (pobj-offset o) (pobj-end o))
                      (pobj-sha o) (hash-object type content)
-                     (pobj-sha-bytes o) (hex->bytes (pobj-sha o))
-                     (gethash (pobj-sha o) by-sha) o))
-             ;; DFS: O is resolved to (TYPE CONTENT); hash it, then push CONTENT
-             ;; down to its ofs-delta children and recurse.  CONTENT stays live
-             ;; only while its subtree is being resolved.
-             (descend (o type content)
-               (finish o type content)
+                     (pobj-sha-bytes o) (hex->bytes (pobj-sha o)))
                (dolist (ci (gethash (pobj-offset o) children))
                  (let ((c (aref objs ci)))
-                   (descend c type (apply-delta content (inflate-payload data c))))))
-             ;; re-derive a resolved object's content by walking its base chain
-             ;; (only needed for the rare ref-delta whose base is in the pack)
-             (content-of (o)
+                   (resolve-subtree c type (apply-delta content (pobj-raw c))))))
+             (root (o)
+               (resolve-subtree o (pack-type-keyword (pobj-type o)) (pobj-raw o))))
+      (let* ((roots (coerce (loop for o across objs when (eq (pobj-kind o) :base) collect o)
+                            'simple-vector))
+             (nroots (length roots))
+             (oid *oid*)
+             (nthreads (if (< nroots 256) 1 (max 1 (min *index-pack-threads* nroots))))
+             (next 0) (lock (sb-thread:make-mutex)) (err nil))
+        (if (= nthreads 1)
+            (loop for o across roots do (root o))
+            (flet ((worker ()
+                     (let ((*oid* oid))
+                       (handler-case
+                           (loop for start = (sb-thread:with-mutex (lock)
+                                               (when (< next nroots) (prog1 next (incf next 64))))
+                                 while start do
+                                   (loop for i from start below (min nroots (+ start 64))
+                                         do (root (aref roots i))))
+                         (error (e) (sb-thread:with-mutex (lock) (unless err (setf err e))))))))
+              (mapc #'sb-thread:join-thread
+                    (loop repeat nthreads collect (sb-thread:make-thread #'worker)))
+              (when err (error err))))))
+    ;; the rare ref-deltas (thin-pack fetches / non-ofs packs) resolve against the
+    ;; now-known SHAs, sequentially
+    (loop for o across objs when (pobj-sha o) do (setf (gethash (pobj-sha o) by-sha) o))
+    (labels ((content-of (o)
                (ecase (pobj-kind o)
-                 (:base (values (pobj-type o) (inflate-payload data o)))
+                 (:base (values (pobj-type o) (pobj-raw o)))
                  (:ofs-delta (multiple-value-bind (bt bc) (content-of (gethash (pobj-base-off o) by-offset))
-                               (values bt (apply-delta bc (inflate-payload data o)))))
+                               (values bt (apply-delta bc (pobj-raw o)))))
                  (:ref-delta (multiple-value-bind (bt bc) (ref-base-content o)
-                               (values bt (apply-delta bc (inflate-payload data o))))))
-               )
+                               (values bt (apply-delta bc (pobj-raw o)))))))
              (ref-base-content (o)
                (let ((base (gethash (pobj-base-sha o) by-sha)))
                  (if base (content-of base)
                      (read-object (or repo (error "cairn: thin-pack base ~a needs a repo"
                                                   (pobj-base-sha o)))
-                                  (pobj-base-sha o))))))
-      ;; resolve everything reachable from the base objects
-      (loop for o across objs when (eq (pobj-kind o) :base) do
-        (descend o (pack-type-keyword (pobj-type o)) (inflate-payload data o)))
-      ;; then ref-deltas (and any ofs-delta rooted at one), in offset order
+                                  (pobj-base-sha o)))))
+             (rec (o type content)
+               (setf (pobj-type o) type (pobj-sha o) (hash-object type content)
+                     (pobj-crc o) (crc32 data (pobj-offset o) (pobj-end o))
+                     (pobj-sha-bytes o) (hex->bytes (pobj-sha o))
+                     (gethash (pobj-sha o) by-sha) o)
+               (dolist (ci (gethash (pobj-offset o) children))
+                 (let ((c (aref objs ci)))
+                   (rec c type (apply-delta content (pobj-raw c)))))))
       (loop for o across objs when (null (pobj-sha o)) do
         (multiple-value-bind (type content)
             (if (eq (pobj-kind o) :ref-delta)
                 (multiple-value-bind (bt bc) (ref-base-content o)
-                  (values bt (apply-delta bc (inflate-payload data o))))
+                  (values bt (apply-delta bc (pobj-raw o))))
                 (content-of o))
-          (descend o type content))))
+          (rec o type content))))
     objs))
 
 ;;; ---- v2 index writer --------------------------------------------------------
