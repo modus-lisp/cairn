@@ -14,14 +14,12 @@
 
 (in-package #:cairn)
 
-(defvar *index-pack-threads*
-  (or (ignore-errors
-        (parse-integer (string-trim '(#\Newline #\Space)
-                                    (uiop:run-program "nproc" :output :string))))
-      4)
-  "Worker threads for parallel delta resolution in index-pack.  The independent
-   base subtrees are fanned across this many threads (defaults to the core
-   count).  Small packs resolve single-threaded regardless.")
+(defvar *index-pack-threads* 8
+  "Worker threads for parallel delta resolution in index-pack.  A fixed default,
+   not a probe of the machine's core count — auto-detection means shelling out to
+   `nproc` or an OS-specific syscall, and we would rather not tie the resolver to
+   any particular kernel.  This only affects speed, never the result; raise it on
+   a big host for more throughput.  Small packs resolve single-threaded anyway.")
 
 (defstruct pobj offset end kind type size payload-off base-off base-sha sha sha-bytes crc raw)
 
