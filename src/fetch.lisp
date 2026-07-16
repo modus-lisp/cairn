@@ -103,7 +103,7 @@
       (declare (ignore head-target))
       (if (null pack)
           (progn (format t "~&already up to date~%") '())
-          (progn
+          (with-store-transaction (repo)     ; new objects + ref moves land together
             (format t "~&received packfile: ~d bytes~%" (length pack))
             (multiple-value-bind (name count) (index-pack repo pack)
               (format t "indexed ~a: ~d objects~%" name count))

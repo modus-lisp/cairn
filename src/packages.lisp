@@ -17,8 +17,9 @@
    ;; repository
    #:open-repository #:repository #:repo-path #:with-repository
    ;; pluggable storage backend (host filesystem by default; cabinet is opt-in)
-   #:make-repository-on-backend #:init-repository
+   #:make-repository-on-backend #:init-repository #:with-store-transaction
    #:make-host-backend #:make-cabinet-backend #:open-cabinet-repository
+   #:make-pagetree-backend #:open-pagetree-repository
    ;; objects
    #:read-object #:object-type #:object-data #:hash-object
    #:parse-commit #:parse-tree

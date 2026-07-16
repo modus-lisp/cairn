@@ -85,20 +85,24 @@
    it, and advance the branch (or detached HEAD).  Returns the new commit SHA."
   (with-oid (repo)
   (unless message (error "cairn: commit requires a :message"))
-  (let* ((tree (write-tree repo))
-         (parent (ignore-errors (head-commit repo)))    ; NIL for an unborn branch
-         (msg (if (and (plusp (length message))
-                       (char= (char message (1- (length message))) #\Newline))
-                  message (concatenate 'string message (string #\Newline))))
-         (text (with-output-to-string (s)
-                 (format s "tree ~a~%" tree)
-                 (when parent (format s "parent ~a~%" parent))
-                 (format s "author ~a ~d ~a~%" author time timezone)
-                 (format s "committer ~a ~d ~a~%" committer time timezone)
-                 (format s "~%~a" msg)))
-         (sha (write-object repo :commit (sb-ext:string-to-octets text :external-format :utf-8))))
-    (multiple-value-bind (kind ref) (head-ref repo)
-      (ecase kind
-        (:symbolic (update-ref repo ref sha))
-        (:detached (fs-write-string repo "HEAD" (format nil "~a~%" sha)))))
-    sha)))
+  ;; the whole commit — tree objects, the commit object, and the ref move — lands
+  ;; as one atomic store transaction on a transactional backend (never a ref that
+  ;; points at objects a crash left half-written).
+  (with-store-transaction (repo)
+    (let* ((tree (write-tree repo))
+           (parent (ignore-errors (head-commit repo)))  ; NIL for an unborn branch
+           (msg (if (and (plusp (length message))
+                         (char= (char message (1- (length message))) #\Newline))
+                    message (concatenate 'string message (string #\Newline))))
+           (text (with-output-to-string (s)
+                   (format s "tree ~a~%" tree)
+                   (when parent (format s "parent ~a~%" parent))
+                   (format s "author ~a ~d ~a~%" author time timezone)
+                   (format s "committer ~a ~d ~a~%" committer time timezone)
+                   (format s "~%~a" msg)))
+           (sha (write-object repo :commit (sb-ext:string-to-octets text :external-format :utf-8))))
+      (multiple-value-bind (kind ref) (head-ref repo)
+        (ecase kind
+          (:symbolic (update-ref repo ref sha))
+          (:detached (fs-write-string repo "HEAD" (format nil "~a~%" sha)))))
+      sha))))

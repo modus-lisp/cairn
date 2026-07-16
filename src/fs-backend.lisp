@@ -23,7 +23,13 @@
   delete-file           ; (relpath)        -> t                absent is fine
   dir-exists-p          ; (reldir)         -> boolean
   list-files            ; (reldir)         -> (basename …)     files directly in reldir
-  walk-files)           ; (reldir)         -> (git-relpath …)  files anywhere under reldir
+  walk-files            ; (reldir)         -> (git-relpath …)  files anywhere under reldir
+  ;; Optional operation-level atomicity.  A backend that can batch a whole cairn
+  ;; operation (a commit, a push) into ONE store transaction supplies these; then
+  ;; every write between begin and end lands together or not at all.  NIL = the
+  ;; writes are independent (host/cabinet: each write is its own unit).
+  begin-txn             ; ()               -> t                open a batching txn
+  end-txn)              ; (commit-p)        -> t                commit it, or abort
 
 ;;; ---- the wrappers cairn's store code calls ---------------------------------
 
@@ -43,6 +49,24 @@
 (defun loose-object-relpath (sha)
   "The git-dir-relative path of the loose object named SHA (hex)."
   (format nil "objects/~a/~a" (subseq sha 0 2) (subseq sha 2)))
+
+(defun call-with-store-transaction (repo thunk)
+  "Run THUNK with REPO's store writes batched into one atomic transaction, if the
+   backend supports it (else just run THUNK — writes are independent).  On a
+   non-local exit the batch is aborted, so a failed operation writes nothing."
+  (let ((be (and repo (repo-backend repo))))
+    (if (and be (fsb-begin-txn be))
+        (progn
+          (funcall (fsb-begin-txn be))
+          (let ((ok nil))
+            (unwind-protect (multiple-value-prog1 (funcall thunk) (setf ok t))
+              (funcall (fsb-end-txn be) ok))))
+        (funcall thunk))))
+
+(defmacro with-store-transaction ((repo) &body body)
+  "Batch every store write in BODY into one atomic transaction (see
+   CALL-WITH-STORE-TRANSACTION).  A no-op for backends without transactions."
+  `(call-with-store-transaction ,repo (lambda () ,@body)))
 
 ;;; ---- the working-tree backend ----------------------------------------------
 ;;;

@@ -48,3 +48,12 @@ filesystem (backed by a pagetree file) instead of the host filesystem."
   :depends-on ("cairn" "cabinet")
   :serial t
   :components ((:module "src" :serial t :components ((:file "backend-cabinet")))))
+
+;; Opt-in: keep the git object/ref store DIRECTLY in pagetree KV (no filesystem
+;; layer), which unlocks operation-level atomic commit/push (one store txn).
+(asdf:defsystem :cairn/pagetree
+  :description "A cairn storage backend that keeps the git object/ref store
+directly in a pagetree key-value store, with atomic commit/push."
+  :depends-on ("cairn" "pagetree")
+  :serial t
+  :components ((:module "src" :serial t :components ((:file "backend-pagetree")))))

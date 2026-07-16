@@ -82,22 +82,25 @@
             (push (list (subseq line 0 sp1) (subseq line (1+ sp1) sp2) (subseq line (1+ sp2)))
                   commands)))))
     ;; the packfile follows (the client half-closes its side after sending it)
-    (let* ((pack (conch:chan-read-all chan))
+    (let* ((cmds (nreverse commands))
+           (pack (conch:chan-read-all chan))
            (start (and pack (search #(#x50 #x41 #x43 #x4b) pack))))
-      (when start
-        (index-pack repo (subseq pack start))
-        (setf (repo-packs repo) :unloaded)))
-    (let ((report (byte-buffer)))
-      (push-bytes report (pktline (format nil "unpack ok~%")))
-      (dolist (cmd (nreverse commands))
-        (destructuring-bind (old new ref) cmd
-          (declare (ignore old))
-          (if (string= new +zero-sha+)
-              (uiop:delete-file-if-exists (merge-pathnames ref (repo-git-dir repo)))
-              (update-ref repo ref new))
-          (push-bytes report (pktline (format nil "ok ~a~%" ref)))))
-      (push-bytes report +flush-pkt+)
-      (conch:chan-write chan (coerce report 'u8v)))))
+      ;; index the pushed objects AND move the refs in one atomic store txn: a
+      ;; crash mid-push leaves the whole push or none of it (no ref pointing at
+      ;; objects that didn't land).
+      (with-store-transaction (repo)
+        (when start
+          (index-pack repo (subseq pack start))
+          (setf (repo-packs repo) :unloaded))
+        (dolist (cmd cmds)
+          (destructuring-bind (old new ref) cmd
+            (declare (ignore old))
+            (if (string= new +zero-sha+) (fs-delete-file repo ref) (update-ref repo ref new)))))
+      (let ((report (byte-buffer)))
+        (push-bytes report (pktline (format nil "unpack ok~%")))
+        (dolist (cmd cmds) (push-bytes report (pktline (format nil "ok ~a~%" (third cmd)))))
+        (push-bytes report +flush-pkt+)
+        (conch:chan-write chan (coerce report 'u8v))))))
 
 (defun parse-git-command (command)
   "(values SERVICE PATH) from e.g. \"git-upload-pack '/srv/repo.git'\"."
