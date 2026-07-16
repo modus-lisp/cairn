@@ -35,6 +35,8 @@
    ;; push + git-over-SSH (via conch)
    #:write-packfile #:objects-to-send #:reachable-objects
    #:clone-ssh #:push-ssh #:parse-ssh-url
+   ;; git-over-SSH server (cairn's own upload-pack/receive-pack)
+   #:serve-git #:git-exec-handler #:serve-upload-pack #:serve-receive-pack
    ;; fetch / pull
    #:fetch #:pull #:remote-url
    ;; merge (three-way, recursive; conflict handling via *merge-resolver*)

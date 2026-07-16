@@ -35,4 +35,5 @@ libgit2, no libcurl, no shelling out to git, no FFI."
      (:file "clone")
      (:file "ssh")
      (:file "fetch")
-     (:file "merge")))))
+     (:file "merge")
+     (:file "serve")))))
