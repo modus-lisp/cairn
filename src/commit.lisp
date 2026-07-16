@@ -12,15 +12,14 @@
 
 (defun head-ref (repo)
   "Where HEAD points: (values :symbolic \"refs/heads/…\") or (values :detached SHA)."
-  (let ((head (string-trim '(#\Newline #\Space #\Return)
-                           (slurp-string (merge-pathnames "HEAD" (repo-git-dir repo))))))
+  (let ((head (string-trim '(#\Newline #\Space #\Return) (or (fs-read-string repo "HEAD") ""))))
     (if (and (> (length head) 5) (string= (subseq head 0 5) "ref: "))
         (values :symbolic (subseq head 5))
         (values :detached head))))
 
 (defun update-ref (repo refname sha)
   "Point REFNAME (e.g. \"refs/heads/master\") at SHA."
-  (write-text-file (merge-pathnames refname (repo-git-dir repo)) (format nil "~a~%" sha)))
+  (fs-write-string repo refname (format nil "~a~%" sha)))
 
 ;;; ---- add --------------------------------------------------------------------
 
@@ -28,14 +27,13 @@
   "Stage the working-tree files at repo-relative PATHS: write each as a blob and
    upsert its index entry.  Writes the index and returns the staged paths."
   (with-oid (repo)
-  (let* ((git-dir (repo-git-dir repo))
-         (index (coerce (read-index git-dir) 'list)))
+  (let* ((index (coerce (read-index repo) 'list)))
     (dolist (rel paths)
       (let ((abs (worktree-path repo rel)))
         (multiple-value-bind (sha mode) (write-blob-from-file repo abs)
           (setf index (cons (stat-index-entry abs rel sha mode)
                             (remove rel index :key #'ie-path :test #'string=))))))
-    (write-index git-dir index)
+    (write-index repo index)
     paths)))
 
 ;;; ---- write-tree -------------------------------------------------------------
@@ -73,7 +71,7 @@
 (defun write-tree (repo)
   "Write tree objects for the current index; return the root tree SHA."
   (with-oid (repo)
-  (build-tree repo (coerce (read-index (repo-git-dir repo)) 'list) "")))
+  (build-tree repo (coerce (read-index repo) 'list) "")))
 
 ;;; ---- commit -----------------------------------------------------------------
 
@@ -103,6 +101,5 @@
     (multiple-value-bind (kind ref) (head-ref repo)
       (ecase kind
         (:symbolic (update-ref repo ref sha))
-        (:detached (write-text-file (merge-pathnames "HEAD" (repo-git-dir repo))
-                                    (format nil "~a~%" sha)))))
+        (:detached (fs-write-string repo "HEAD" (format nil "~a~%" sha)))))
     sha)))

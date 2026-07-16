@@ -25,14 +25,11 @@
         ((= mode #o120000) "120000") ((= mode #o160000) "160000")
         (t (error "cairn: unexpected index mode ~o" mode))))
 
-(defun index-path (git-dir) (merge-pathnames "index" git-dir))
-
-(defun read-index (git-dir)
+(defun read-index (repo)
   "Parse .git/index into a vector of INDEX-ENTRY (empty if the file is absent)."
-  (let ((path (index-path git-dir)))
-    (unless (probe-file path) (return-from read-index (make-array 0)))
-    (let* ((buf (slurp-bytes path))
-           (n (be32 buf 8))
+  (let ((buf (fs-read-bytes repo "index")))
+    (unless buf (return-from read-index (make-array 0)))
+    (let* ((n (be32 buf 8))
            (entries (make-array n))
            (pos 12))
       (unless (and (= (aref buf 0) (char-code #\D)) (= (aref buf 1) (char-code #\I)))
@@ -61,7 +58,7 @@
             (setf pos (+ start (logand (+ len 8) (lognot 7)))))))
       entries)))
 
-(defun write-index (git-dir entries)
+(defun write-index (repo entries)
   "Write ENTRIES (a sequence of INDEX-ENTRY) as a v2 .git/index.  Entries sort by
    path then stage, so conflict stages (1/2/3) sit together under their path."
   (let ((sorted (sort (coerce entries 'list)
@@ -90,7 +87,7 @@
                (pad (- (logand (+ len 8) (lognot 7)) len)))
           (dotimes (_ pad) (vector-push-extend 0 buf)))))
     (push-bytes buf (oid-digest (subseq buf 0 (fill-pointer buf))))
-    (write-bytes (index-path git-dir) (coerce buf 'u8v))))
+    (fs-write-bytes repo "index" (coerce buf 'u8v))))
 
 (defun stat-index-entry (path relpath sha mode)
   "Build an INDEX-ENTRY for the on-disk file PATH (repo-relative RELPATH), whose

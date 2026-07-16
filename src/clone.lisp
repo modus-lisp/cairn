@@ -113,23 +113,23 @@
    (optionally) check out.  Shared by HTTP and SSH clone.  Returns the repo."
   (let* ((dest (uiop:ensure-directory-pathname dest))
          (git-dir (merge-pathnames ".git/" dest))
+         (repo (make-repository-on-backend (make-host-backend git-dir)
+                                           :path dest :git-dir git-dir))
          (head-target (or head-target
                           (car (find-if (lambda (r) (search "refs/heads/" (car r))) refs))
                           "refs/heads/master")))
-    (write-text-file (merge-pathnames "HEAD" git-dir) (format nil "ref: ~a~%" head-target))
-    (write-text-file (merge-pathnames "config" git-dir)
+    (fs-write-string repo "HEAD" (format nil "ref: ~a~%" head-target))
+    (fs-write-string repo "config"
                      (format nil "[core]~%	repositoryformatversion = 0~%	bare = false~%~
                                   [remote \"origin\"]~%	url = ~a~%" url))
     (loop for (name . sha) in refs
           unless (or (string= name "HEAD") (peeled-ref-p name))
-            do (write-text-file (merge-pathnames name git-dir) (format nil "~a~%" sha)))
-    (multiple-value-bind (pack-name count)
-        (index-pack pack (merge-pathnames "objects/pack/" git-dir))
+            do (fs-write-string repo name (format nil "~a~%" sha)))
+    (multiple-value-bind (pack-name count) (index-pack repo pack)
       (format t "indexed ~a: ~d objects~%" pack-name count))
-    (let ((repo (open-repository dest)))
-      (when checkout
-        (format t "checked out ~d files~%" (checkout repo)))
-      repo)))
+    (when checkout
+      (format t "checked out ~d files~%" (checkout repo)))
+    repo))
 
 ;;; ---- push over smart HTTP (send-pack) ---------------------------------------
 

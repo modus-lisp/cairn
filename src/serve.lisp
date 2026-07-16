@@ -85,8 +85,7 @@
     (let* ((pack (conch:chan-read-all chan))
            (start (and pack (search #(#x50 #x41 #x43 #x4b) pack))))
       (when start
-        (index-pack (subseq pack start)
-                    (merge-pathnames "objects/pack/" (repo-git-dir repo)) repo)
+        (index-pack repo (subseq pack start))
         (setf (repo-packs repo) :unloaded)))
     (let ((report (byte-buffer)))
       (push-bytes report (pktline (format nil "unpack ok~%")))

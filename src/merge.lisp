@@ -242,7 +242,7 @@
                                            :ctime 0 :mtime 0 :dev 0 :ino 0 :uid 0 :gid 0 :size 0)
                          entries))))
           (stage o 1) (stage a 2) (stage b 3))))
-    (write-index (repo-git-dir repo) entries)
+    (write-index repo entries)
     (write-text-file (merge-pathnames "MERGE_HEAD" (repo-git-dir repo)) (format nil "~a~%" theirs))
     (write-text-file (merge-pathnames "MERGE_MSG" (repo-git-dir repo))
                      (format nil "Merge ~a~%~%# Conflicts:~%~{#\	~a~%~}" label (sort (copy-list cpaths) #'string<)))

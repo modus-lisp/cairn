@@ -13,9 +13,9 @@
   (with-oid (repo)
   (let* ((body (concatenate 'u8v (object-header type content) content))
          (sha (oid-hex body))
-         (path (object-path repo sha)))
-    (unless (probe-file path)
-      (write-bytes path (zlib-compress body)))
+         (rel (loose-object-relpath sha)))
+    (unless (fs-exists-p repo rel)
+      (fs-write-bytes repo rel (zlib-compress body)))
     sha)))
 
 (defun write-blob-from-file (repo path)

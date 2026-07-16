@@ -108,7 +108,7 @@
    :cached t: index vs HEAD (staged changes)."
   (with-oid (repo)
   (let ((index-map (make-hash-table :test 'equal)))
-    (loop for e across (read-index (repo-git-dir repo))
+    (loop for e across (read-index repo)
           do (setf (gethash (ie-path e) index-map) (ie-sha e)))
     (if cached
         (let ((head (head-tree-map repo)) (seen (make-hash-table :test 'equal)))

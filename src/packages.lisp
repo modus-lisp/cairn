@@ -16,6 +16,9 @@
    #:sha1 #:sha1-hex #:zlib-decompress #:zlib-compress #:inflate #:deflate
    ;; repository
    #:open-repository #:repository #:repo-path #:with-repository
+   ;; pluggable storage backend (host filesystem by default; cabinet is opt-in)
+   #:make-repository-on-backend #:init-repository
+   #:make-host-backend #:make-cabinet-backend #:open-cabinet-repository
    ;; objects
    #:read-object #:object-type #:object-data #:hash-object
    #:parse-commit #:parse-tree

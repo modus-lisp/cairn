@@ -18,13 +18,14 @@
 (defun be64 (bytes off)
   (logior (ash (be32 bytes off) 32) (be32 bytes (+ off 4))))
 
-(defun open-pack (idx-path)
-  (let* ((idx (slurp-bytes idx-path))
-         (pack-path (make-pathname :type "pack" :defaults idx-path)))
-    (unless (and (= (aref idx 0) #xff) (= (aref idx 1) (char-code #\t)))
-      (error "cairn: unsupported pack index (only v2)"))
-    (make-pack :path pack-path :idx idx :pack-data (slurp-bytes pack-path)
-               :n (be32 idx (+ 8 (* 255 4))))))                 ; fanout[255] = object count
+(defun open-pack-bytes (idx pack-data &optional (label "pack"))
+  "Build a PACK from already-read .idx and .pack byte vectors (LABEL is only for
+   diagnostics).  The store's backend does the reading, so this never touches a
+   filesystem — packs are slurped whole either way."
+  (unless (and (>= (length idx) 2) (= (aref idx 0) #xff) (= (aref idx 1) (char-code #\t)))
+    (error "cairn: unsupported pack index (only v2)"))
+  (make-pack :path label :idx idx :pack-data pack-data
+             :n (be32 idx (+ 8 (* 255 4)))))                    ; fanout[255] = object count
 
 (defun %cmp-oid (bytes off sha)
   "Compare the oid-width bytes at BYTES[OFF] against SHA.  -1 / 0 / 1."

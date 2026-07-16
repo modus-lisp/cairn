@@ -18,6 +18,7 @@ libgit2, no libcurl, no shelling out to git, no FFI."
     ((:file "packages")
      (:file "util")
      (:file "objects")
+     (:file "fs-backend")
      (:file "refs")
      (:file "pack")
      (:file "repository")
@@ -37,3 +38,13 @@ libgit2, no libcurl, no shelling out to git, no FFI."
      (:file "fetch")
      (:file "merge")
      (:file "serve")))))
+
+;;; Opt-in bridge: keep a cairn repository inside a cabinet filesystem (which
+;;; lives in a single pagetree file).  Separate system so cairn's core carries no
+;;; dependency on cabinet/pagetree unless you ask for it.
+(asdf:defsystem :cairn/cabinet
+  :description "A cairn storage backend that keeps the git store in a cabinet
+filesystem (backed by a pagetree file) instead of the host filesystem."
+  :depends-on ("cairn" "cabinet")
+  :serial t
+  :components ((:module "src" :serial t :components ((:file "backend-cabinet")))))

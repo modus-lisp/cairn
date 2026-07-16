@@ -105,8 +105,7 @@
           (progn (format t "~&already up to date~%") '())
           (progn
             (format t "~&received packfile: ~d bytes~%" (length pack))
-            (multiple-value-bind (name count)
-                (index-pack pack (merge-pathnames "objects/pack/" (repo-git-dir repo)) repo)
+            (multiple-value-bind (name count) (index-pack repo pack)
               (format t "indexed ~a: ~d objects~%" name count))
             (setf (repo-packs repo) :unloaded)   ; new pack on disk: drop the stale cache
             (let ((updates (update-remote-refs repo remote-refs)))

@@ -43,7 +43,7 @@
    are removed, so a fast-forward leaves a clean tree.  Returns the file count."
   (with-oid (repo)
   (let* ((tree (commit-tree (parse-commit (object-data repo commit))))
-         (old (read-index (repo-git-dir repo)))
+         (old (read-index repo))
          (entries (make-array 64 :adjustable t :fill-pointer 0)))
     (write-worktree repo tree "" entries)
     (let ((kept (make-hash-table :test 'equal)))
@@ -51,5 +51,5 @@
       (loop for e across old
             unless (gethash (ie-path e) kept)
               do (uiop:delete-file-if-exists (worktree-path repo (ie-path e)))))
-    (write-index (repo-git-dir repo) entries)
+    (write-index repo entries)
     (length entries))))

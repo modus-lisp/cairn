@@ -206,15 +206,14 @@
   "Lexicographic compare of two equal-length hex strings -> -1/0/1."
   (cond ((string< a b) -1) ((string> a b) 1) (t 0)))
 
-(defun index-pack (pack-bytes pack-dir &optional repo)
-  "Write PACK-BYTES and its computed .idx into PACK-DIR (…/objects/pack/).
-   Returns (values PACK-NAME OBJECT-COUNT).  REPO lets a thin pack resolve
-   deltas against objects already in the store (see index-pack-objects)."
+(defun index-pack (repo pack-bytes)
+  "Write PACK-BYTES and its computed .idx into REPO's objects/pack/ (through the
+   repository's storage backend).  Returns (values PACK-NAME OBJECT-COUNT).  REPO
+   also lets a thin pack resolve deltas against objects already in the store."
   (let* ((objs (index-pack-objects pack-bytes repo))
          (checksum (subseq pack-bytes (- (length pack-bytes) (oid-nbytes))))
          (name (format nil "pack-~a" (bytes->hex checksum)))
          (idx (build-pack-index objs checksum)))
-    (ensure-directories-exist pack-dir)
-    (write-bytes (merge-pathnames (format nil "~a.pack" name) pack-dir) pack-bytes)
-    (write-bytes (merge-pathnames (format nil "~a.idx" name) pack-dir) idx)
+    (fs-write-bytes repo (format nil "objects/pack/~a.pack" name) pack-bytes)
+    (fs-write-bytes repo (format nil "objects/pack/~a.idx" name) idx)
     (values name (length objs))))

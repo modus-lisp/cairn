@@ -65,7 +65,7 @@
    alists of (path . :added/:modified/:deleted); UNTRACKED and UNMERGED are lists
    of paths (UNMERGED = paths with conflict stages recorded by a merge)."
   (with-oid (repo)
-  (let* ((index (read-index (repo-git-dir repo)))
+  (let* ((index (read-index repo))
          (index-map (make-hash-table :test 'equal))
          (head (head-tree-map repo))
          (unmerged '())
