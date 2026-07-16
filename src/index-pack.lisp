@@ -3,14 +3,18 @@
 ;;;; A fetched pack arrives with no index: just PACK, a version, an object
 ;;;; count, then that many zlib streams (some of them deltas against earlier
 ;;;; objects), and a trailing SHA-1 of the whole thing.  To store it the way
-;;;; git does, we walk it once — chipz tells us where each zlib stream ends,
-;;;; so we can find object boundaries — resolve every delta to get each
-;;;; object's real SHA-1, and write a v2 .idx (fanout, sorted SHAs, CRCs,
-;;;; offsets).  After this the ordinary pack.lisp read path takes over.
+;;;; git does, we scan it once — chipz tells us where each zlib stream ends, so
+;;;; we can find object boundaries — recording each object's extent and CRC but
+;;;; keeping *no* content; then we resolve deltas with a depth-first walk of the
+;;;; delta tree, holding only the objects on the current root-to-leaf path.  So
+;;;; memory is bounded by the deepest delta chain, not the pack: a big repo no
+;;;; longer needs its whole expanded history resident at once.  Finally we write
+;;;; a v2 .idx (fanout, sorted SHAs, CRCs, offsets) and the pack.lisp read path
+;;;; takes over.
 
 (in-package #:cairn)
 
-(defstruct pobj offset end kind type raw base-off base-sha sha sha-bytes crc)
+(defstruct pobj offset end kind type size payload-off base-off base-sha sha sha-bytes crc)
 
 (defun inflate-at (data pos uncompressed-size)
   "Inflate the zlib stream in DATA starting at POS, known to expand to
@@ -23,9 +27,14 @@
         (error "cairn: pack object inflated to ~d, header said ~d" produced uncompressed-size))
       (values out consumed))))
 
-(defun parse-pack-object (data pos)
-  "Parse the object at POS.  Returns a POBJ with its raw payload (content for a
-   base object, delta bytes for a delta) and its END offset in DATA."
+(defun inflate-payload (data o)
+  "The object's own payload — base content, or a delta's instruction stream."
+  (values (inflate-at data (pobj-payload-off o) (pobj-size o))))
+
+(defun scan-pack-object (data pos)
+  "Parse the object header at POS and locate its END (by inflating to find the
+   zlib stream boundary, discarding the output — so the scan holds only one
+   object's worth of memory).  Returns a POBJ with structure but no content."
   (let* ((start pos)
          (b (aref data pos)) (type (logand (ash b -4) 7)) (size (logand b 15)) (shift 4))
     (incf pos)
@@ -34,30 +43,33 @@
       (setf size (logior size (ash (logand b #x7f) shift))) (incf shift 7))
     (ecase type
       ((1 2 3 4)
-       (multiple-value-bind (content consumed) (inflate-at data pos size)
-         (make-pobj :offset start :end (+ pos consumed) :kind :base
-                    :type type :raw content)))
+       (make-pobj :offset start :end (+ pos (nth-value 1 (inflate-at data pos size)))
+                  :kind :base :type type :size size :payload-off pos))
       (6                                                   ; ofs-delta
        (let ((base-rel (logand (aref data pos) #x7f)))
          (loop while (logtest (aref data pos) #x80) do
            (incf pos)
            (setf base-rel (logior (ash (1+ base-rel) 7) (logand (aref data pos) #x7f))))
          (incf pos)
-         (multiple-value-bind (delta consumed) (inflate-at data pos size)
-           (make-pobj :offset start :end (+ pos consumed) :kind :ofs-delta
-                      :base-off (- start base-rel) :raw delta))))
+         (make-pobj :offset start :end (+ pos (nth-value 1 (inflate-at data pos size)))
+                    :kind :ofs-delta :base-off (- start base-rel) :size size :payload-off pos)))
       (7                                                   ; ref-delta
        (let ((base-sha (bytes->hex (subseq data pos (+ pos (oid-nbytes))))))
          (incf pos (oid-nbytes))
-         (multiple-value-bind (delta consumed) (inflate-at data pos size)
-           (make-pobj :offset start :end (+ pos consumed) :kind :ref-delta
-                      :base-sha base-sha :raw delta)))))))
+         (make-pobj :offset start :end (+ pos (nth-value 1 (inflate-at data pos size)))
+                    :kind :ref-delta :base-sha base-sha :size size :payload-off pos))))))
 
 (defun index-pack-objects (data &optional repo)
   "Walk packfile DATA, resolve all deltas, and return a vector of POBJ with
    :sha / :sha-bytes / :crc filled in.  Verifies the trailing pack checksum.
    REPO, if given, lets a *thin* pack (from a fetch with `have`s) resolve
-   ref-deltas whose base is not in the pack but already in the object store."
+   ref-deltas whose base is not in the pack but already in the object store.
+
+   Memory is bounded by the deepest delta chain, not the pack size: a scan
+   records object boundaries + CRCs without keeping any content, and resolution
+   is a depth-first walk of the delta tree that holds only the objects on the
+   current root-to-leaf path (git's approach).  So a large repo no longer needs
+   the whole expanded history resident at once."
   (unless (and (= (aref data 0) (char-code #\P)) (= (aref data 1) (char-code #\A))
                (= (aref data 2) (char-code #\C)) (= (aref data 3) (char-code #\K)))
     (error "cairn: not a packfile (bad magic)"))
@@ -65,46 +77,60 @@
          (objs (make-array n))
          (by-offset (make-hash-table))
          (by-sha (make-hash-table :test 'equal))
+         (children (make-hash-table))                       ; base offset -> child indices
          (pos 12))
-    ;; pass 1 — parse every object, record its byte extent + CRC
+    ;; pass 1 — scan boundaries + CRC, retaining no content
     (dotimes (i n)
-      (let ((o (parse-pack-object data pos)))
+      (let ((o (scan-pack-object data pos)))
         (setf (pobj-crc o) (crc32 data (pobj-offset o) (pobj-end o))
               (aref objs i) o
               (gethash (pobj-offset o) by-offset) o
-              pos (pobj-end o))))
-    ;; verify pack trailer = SHA-1 of everything before it
+              pos (pobj-end o))
+        (when (eq (pobj-kind o) :ofs-delta)
+          (push i (gethash (pobj-base-off o) children)))))
     (let ((trailer (subseq data pos (+ pos (oid-nbytes)))))
       (unless (equalp trailer (oid-digest (subseq data 0 pos)))
         (error "cairn: pack checksum mismatch")))
-    ;; pass 2 — resolve deltas (bases always precede in a non-thin pack) and hash
-    (labels ((resolve (o)
-               (or (pobj-sha o)
-                   (multiple-value-bind (type content)
-                       (ecase (pobj-kind o)
-                         (:base (values (pack-type-keyword (pobj-type o)) (pobj-raw o)))
-                         (:ofs-delta
-                          (let ((base (gethash (pobj-base-off o) by-offset)))
-                            (resolve base)
-                            (values (pobj-type base) (apply-delta (pobj-raw base) (pobj-raw o)))))
-                         (:ref-delta
-                          (let ((base (gethash (pobj-base-sha o) by-sha)))
-                            (if base
-                                (values (pobj-type base) (apply-delta (pobj-raw base) (pobj-raw o)))
-                                ;; thin pack: base is already in the local store
-                                (multiple-value-bind (btype bcontent)
-                                    (read-object (or repo (error "cairn: thin-pack base ~a needs a repo"
-                                                                 (pobj-base-sha o)))
-                                                 (pobj-base-sha o))
-                                  (values btype (apply-delta bcontent (pobj-raw o))))))))
-                     ;; store the resolved content back so dependents can reuse it
-                     (setf (pobj-type o) type
-                           (pobj-raw o) content
-                           (pobj-sha o) (hash-object type content)
-                           (pobj-sha-bytes o) (hex->bytes (pobj-sha o))
-                           (gethash (pobj-sha o) by-sha) o)
-                     (pobj-sha o)))))
-      (loop for o across objs do (resolve o)))
+    (labels ((finish (o type content)
+               (setf (pobj-type o) type
+                     (pobj-sha o) (hash-object type content)
+                     (pobj-sha-bytes o) (hex->bytes (pobj-sha o))
+                     (gethash (pobj-sha o) by-sha) o))
+             ;; DFS: O is resolved to (TYPE CONTENT); hash it, then push CONTENT
+             ;; down to its ofs-delta children and recurse.  CONTENT stays live
+             ;; only while its subtree is being resolved.
+             (descend (o type content)
+               (finish o type content)
+               (dolist (ci (gethash (pobj-offset o) children))
+                 (let ((c (aref objs ci)))
+                   (descend c type (apply-delta content (inflate-payload data c))))))
+             ;; re-derive a resolved object's content by walking its base chain
+             ;; (only needed for the rare ref-delta whose base is in the pack)
+             (content-of (o)
+               (ecase (pobj-kind o)
+                 (:base (values (pobj-type o) (inflate-payload data o)))
+                 (:ofs-delta (multiple-value-bind (bt bc) (content-of (gethash (pobj-base-off o) by-offset))
+                               (values bt (apply-delta bc (inflate-payload data o)))))
+                 (:ref-delta (multiple-value-bind (bt bc) (ref-base-content o)
+                               (values bt (apply-delta bc (inflate-payload data o))))))
+               )
+             (ref-base-content (o)
+               (let ((base (gethash (pobj-base-sha o) by-sha)))
+                 (if base (content-of base)
+                     (read-object (or repo (error "cairn: thin-pack base ~a needs a repo"
+                                                  (pobj-base-sha o)))
+                                  (pobj-base-sha o))))))
+      ;; resolve everything reachable from the base objects
+      (loop for o across objs when (eq (pobj-kind o) :base) do
+        (descend o (pack-type-keyword (pobj-type o)) (inflate-payload data o)))
+      ;; then ref-deltas (and any ofs-delta rooted at one), in offset order
+      (loop for o across objs when (null (pobj-sha o)) do
+        (multiple-value-bind (type content)
+            (if (eq (pobj-kind o) :ref-delta)
+                (multiple-value-bind (bt bc) (ref-base-content o)
+                  (values bt (apply-delta bc (inflate-payload data o))))
+                (content-of o))
+          (descend o type content))))
     objs))
 
 ;;; ---- v2 index writer --------------------------------------------------------
