@@ -9,7 +9,7 @@ libgit2, no libcurl, no shelling out to git, no FFI."
   :version "0.0.1"
   :author "ynniv"
   :license "MIT"
-  :depends-on ("seal" "conch" "cram" "sb-posix")
+  :depends-on ("seal" "seal/http" "conch" "cram" "sb-posix")
   :serial t
   :components
   ((:module "src"

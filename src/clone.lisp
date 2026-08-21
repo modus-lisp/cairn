@@ -24,9 +24,9 @@
   "GET BASE/info/refs?service=SERVICE.  Returns (values REFS CAPS HEAD-TARGET),
    REFS an alist of (refname . sha), CAPS the capability string, HEAD-TARGET the
    symref HEAD points at (or NIL).  AUTH is an optional Authorization header alist."
-  (let* ((u (parse-url (format nil "~a/info/refs?service=~a" base service))))
+  (let ()
     (multiple-value-bind (code hdrs body)
-        (https-request "GET" (parsed-url-host u) (parsed-url-port u) (parsed-url-path u) :headers auth)
+        (http-request "GET" (format nil "~a/info/refs?service=~a" base service) :headers auth)
       (declare (ignore hdrs))
       (unless (= code 200) (error "cairn: info/refs returned HTTP ~d" code))
       (let ((pos 0) (refs '()) (caps "") (head-target nil) (first t))
@@ -60,7 +60,7 @@
   "POST BASE/git-upload-pack with WANTS (SHA hex strings) — and, for an
    incremental fetch, HAVES we already hold — and receive the packfile bytes.
    With haves the server may return a thin pack."
-  (let* ((u (parse-url (format nil "~a/git-upload-pack" base)))
+  (let* ((url (format nil "~a/git-upload-pack" base))
          (body (let ((out (make-array 256 :element-type '(unsigned-byte 8)
                                            :adjustable t :fill-pointer 0)))
                  (loop for sha in wants for firstp = t then nil
@@ -75,7 +75,7 @@
                  (loop for b across (pktline (format nil "done~%")) do (vector-push-extend b out))
                  (coerce out '(simple-array (unsigned-byte 8) (*))))))
     (multiple-value-bind (code hdrs resp)
-        (https-request "POST" (parsed-url-host u) (parsed-url-port u) (parsed-url-path u)
+        (http-request "POST" url
                        :headers (list (cons "Content-Type" "application/x-git-upload-pack-request"))
                        :body body)
       (declare (ignore hdrs))
@@ -168,7 +168,7 @@
                (old (or (cdr (assoc refname refs :test #'string=)) +zero-sha+))
                (send (objects-to-send repo new (remote-haves repo refs)))
                (pack (write-packfile repo send))
-               (u (parse-url (format nil "~a/git-receive-pack" base)))
+               (url (format nil "~a/git-receive-pack" base))
                (body (let ((out (byte-buffer)))
                        (push-bytes out (pktline (format nil "~a ~a ~a~creport-status agent=cairn/0.1~%"
                                                          old new refname #\Nul)))
@@ -178,7 +178,7 @@
           (format t "~&pushing ~a  ~a -> ~a  (~d objects, ~d bytes)~%"
                   refname (short old) (short new) (length send) (length pack))
           (multiple-value-bind (code hdrs resp)
-              (https-request "POST" (parsed-url-host u) (parsed-url-port u) (parsed-url-path u)
+              (http-request "POST" url
                              :headers (append (list (cons "Content-Type"
                                                           "application/x-git-receive-pack-request"))
                                               auth)
