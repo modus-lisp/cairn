@@ -42,4 +42,4 @@ jobs:
         working-directory: cairn
         env:
           CL_SOURCE_REGISTRY: '(:source-registry (:tree "${{ github.workspace }}/") (:exclude "vendor") (:exclude "deps") :inherit-configuration)'
-        run: sbcl --dynamic-space-size 3072 --non-interactive --eval '(require :asdf)' --load inspect/verify-objects.lisp
+        run: sbcl --dynamic-space-size 3072 --non-interactive --eval '(require :asdf)' --eval '(asdf:load-system "cairn")' --load inspect/verify-objects.lisp
