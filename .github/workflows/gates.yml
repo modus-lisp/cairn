@@ -40,4 +40,6 @@ jobs:
           sbcl --non-interactive --eval '(ql:quickload (list :chipz :salza2))'
       - name: Gate
         working-directory: cairn
+        env:
+          CL_SOURCE_REGISTRY: '(:source-registry (:tree "${{ github.workspace }}/") (:exclude "vendor") (:exclude "deps") :inherit-configuration)'
         run: sbcl --dynamic-space-size 3072 --non-interactive --eval '(require :asdf)' --load inspect/inspect/verify-objects.lisp
