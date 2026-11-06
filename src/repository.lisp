@@ -96,17 +96,16 @@
                      (ensure-directories-exist (full rel))
                      (uiop:delete-file-if-exists (full rel))
                      (sb-posix:symlink target (nat rel)) t)
-     :open-output  (lambda (rel exec)
-                     (let ((p (full rel)))
-                       (ensure-directories-exist p)
-                       (list (open p :element-type '(unsigned-byte 8) :direction :output
-                                     :if-exists :supersede :if-does-not-exist :create)
-                             (nat rel) exec)))
-     :write-output (lambda (h buf start end) (write-sequence buf (first h) :start start :end end) t)
+     ;; written beside the file and renamed into place when complete (HOST-OPEN-OUTPUT); the
+     ;; mode is set on the partial file, so the file appears with it
+     :open-output  (lambda (rel exec) (list (host-open-output (full rel)) exec))
+     :write-output (lambda (h buf start end) (write-sequence buf (first (first h)) :start start :end end) t)
      :close-output (lambda (h abort)
-                     (close (first h) :abort abort)
-                     (when (and (third h) (not abort)) (sb-posix:chmod (second h) #o755))
-                     t)
+                     (destructuring-bind (out exec) h
+                       (when (and exec (not abort))
+                         (finish-output (first out))
+                         (sb-posix:chmod (native (second out)) #o755))
+                       (host-close-output out abort)))
      :read-symlink (lambda (rel) (sb-posix:readlink (nat rel)))
      :delete-file  (lambda (rel) (uiop:delete-file-if-exists (full rel)) t)
      :exists-p     (lambda (rel) (and (ignore-errors (sb-posix:lstat (nat rel))) t))

@@ -233,6 +233,35 @@
       (when (uiop:directory-exists-p dir) (walk dir)))
     (nreverse out)))
 
+;;; A file written in pieces goes to a sibling name first and replaces PATH only when it is
+;;; complete, so a reader -- or a crash -- never sees half of it under the real name.
+
+(defvar *host-partial-counter* 0)
+
+(defun host-partial-sibling (path)
+  "A pathname beside PATH, in the same directory (so the rename stays on one filesystem), for
+   writing PATH's new contents before they replace it."
+  (make-pathname :name (format nil "~a.partial~d" (file-namestring path) (incf *host-partial-counter*))
+                 :type nil :version nil :defaults path))
+
+(defun host-open-output (path)
+  "Begin writing PATH a piece at a time.  Returns a handle (STREAM PARTIAL PATH)."
+  (ensure-directories-exist path)
+  (let ((partial (host-partial-sibling path)))
+    (list (open partial :element-type '(unsigned-byte 8) :direction :output
+                        :if-exists :supersede :if-does-not-exist :create)
+          partial path)))
+
+(defun host-close-output (h abort)
+  "Finish the file open as H: on success the partial file replaces PATH (rename(2) replaces
+   atomically); with ABORT it is deleted and PATH is left as it was."
+  (destructuring-bind (stream partial path) h
+    (close stream :abort abort)
+    (if abort
+        (when (probe-file partial) (delete-file partial))
+        (rename-file partial path)))
+  t)
+
 (defun make-host-backend (git-dir)
   "A backend that reads and writes the real host filesystem under GIT-DIR (a
    directory pathname).  This is byte-for-byte the behavior cairn had before the
@@ -252,15 +281,17 @@
                          (mapcar #'file-namestring (uiop:directory-files d)))))
      :walk-files   (lambda (rel) (host-walk-files (full rel) git-dir))
      :write-stream (lambda (rel next)
-                     (let ((p (full rel)) (n 0))
-                       (ensure-directories-exist p)
-                       (with-open-file (s p :element-type '(unsigned-byte 8) :direction :output
-                                            :if-exists :supersede :if-does-not-exist :create)
-                         (loop (multiple-value-bind (v end) (funcall next)
-                                 (unless v (return))
-                                 (let ((end (or end (length v))))
-                                   (write-sequence v s :end end)
-                                   (incf n end)))))
+                     (let ((h (host-open-output (full rel))) (n 0) (ok nil))
+                       (unwind-protect
+                            (progn
+                              (loop (multiple-value-bind (v end) (funcall next)
+                                      (unless v (return))
+                                      (let ((end (or end (length v))))
+                                        (write-sequence v (first h) :end end)
+                                        (incf n end))))
+                              (host-close-output h nil)
+                              (setf ok t))
+                         (unless ok (host-close-output h t)))
                        n))
      ;; A handle is an open stream, so a pack being read for a whole checkout costs one
      ;; open; CLOSE-INPUT closes it.
@@ -272,13 +303,9 @@
                      (- (read-sequence buf s :start start :end end) start))
      :input-size   (lambda (s) (file-length s))
      :close-input  (lambda (s) (close s) t)
-     :open-output  (lambda (rel)
-                     (let ((p (full rel)))
-                       (ensure-directories-exist p)
-                       (open p :element-type '(unsigned-byte 8) :direction :output
-                               :if-exists :supersede :if-does-not-exist :create)))
-     :write-output (lambda (s buf start end) (write-sequence buf s :start start :end end) t)
-     :close-output (lambda (s abort) (close s :abort abort) t)
+     :open-output  (lambda (rel) (host-open-output (full rel)))
+     :write-output (lambda (h buf start end) (write-sequence buf (first h) :start start :end end) t)
+     :close-output (lambda (h abort) (host-close-output h abort))
      :rename-file  (lambda (from to)
                      (let ((to (full to)))
                        (when (probe-file to) (delete-file to))
