@@ -31,6 +31,7 @@
    #:cat-file #:cat-file-string #:log-commits #:ls-tree #:rev-parse
    ;; transport (smart HTTP over seal)
    #:clone #:discover-refs #:fetch-pack #:index-pack #:checkout #:push-http
+   #:fetch-pack-into #:receive-pack-stream #:index-pack-file
    ;; write side
    #:write-object #:add #:write-tree #:commit #:update-ref #:head-ref
    #:read-index #:write-index #:index-entry #:ie-path #:ie-sha #:ie-mode

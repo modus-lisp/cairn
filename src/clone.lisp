@@ -56,24 +56,30 @@
                   (push (cons (subseq line (1+ sp)) (subseq line 0 sp)) refs))))))
         (values (nreverse refs) caps head-target)))))
 
+;; The request body is the same for a pack fetched into memory and one streamed to disk.
+(defun upload-pack-request (wants haves)
+  "The git-upload-pack request body asking for WANTS, telling the server about HAVES."
+  (let ((out (make-array 256 :element-type '(unsigned-byte 8)
+                             :adjustable t :fill-pointer 0)))
+    (loop for sha in wants for firstp = t then nil
+          for line = (if firstp
+                         (format nil "want ~a ofs-delta agent=cairn/0.1~%" sha)
+                         (format nil "want ~a~%" sha))
+          do (loop for b across (pktline line) do (vector-push-extend b out)))
+    (loop for b across +flush-pkt+ do (vector-push-extend b out))
+    (loop for sha in haves
+          do (loop for b across (pktline (format nil "have ~a~%" sha))
+                   do (vector-push-extend b out)))
+    (loop for b across (pktline (format nil "done~%")) do (vector-push-extend b out))
+    (coerce out '(simple-array (unsigned-byte 8) (*)))))
+
 (defun fetch-pack (base wants &optional haves)
   "POST BASE/git-upload-pack with WANTS (SHA hex strings) — and, for an
    incremental fetch, HAVES we already hold — and receive the packfile bytes.
-   With haves the server may return a thin pack."
+   With haves the server may return a thin pack.  The pack is returned in memory;
+   FETCH-PACK-INTO streams it into a repository instead."
   (let* ((url (format nil "~a/git-upload-pack" base))
-         (body (let ((out (make-array 256 :element-type '(unsigned-byte 8)
-                                           :adjustable t :fill-pointer 0)))
-                 (loop for sha in wants for firstp = t then nil
-                       for line = (if firstp
-                                      (format nil "want ~a ofs-delta agent=cairn/0.1~%" sha)
-                                      (format nil "want ~a~%" sha))
-                       do (loop for b across (pktline line) do (vector-push-extend b out)))
-                 (loop for b across +flush-pkt+ do (vector-push-extend b out))
-                 (loop for sha in haves
-                       do (loop for b across (pktline (format nil "have ~a~%" sha))
-                                do (vector-push-extend b out)))
-                 (loop for b across (pktline (format nil "done~%")) do (vector-push-extend b out))
-                 (coerce out '(simple-array (unsigned-byte 8) (*))))))
+         (body (upload-pack-request wants haves)))
     (multiple-value-bind (code hdrs resp)
         (http-request "POST" url
                        :headers (list (cons "Content-Type" "application/x-git-upload-pack-request"))
@@ -85,6 +91,54 @@
         (unless start (error "cairn: no packfile in upload-pack response"))
         (subseq resp start)))))
 
+(defun %read-fully (read buf start end)
+  "Pull exactly BUF[START..END) through READ, or fewer only at the end of the body."
+  (let ((i start))
+    (loop while (< i end)
+          do (let ((n (funcall read buf i end)))
+               (when (zerop n) (return))
+               (incf i n)))
+    (- i start)))
+
+(defun pack-chunks (read &key (buffer-size 65536))
+  "Chunks of the pack in an upload-pack response read through READ: a function returning
+   (values BUF END) for each piece and NIL at the end, as FS-WRITE-STREAM takes them.  The
+   pkt-lines before the pack (NAK / ACK) are read and dropped.  BUF is reused."
+  (let ((buf (make-array buffer-size :element-type '(unsigned-byte 8)))
+        (started nil))
+    (lambda ()
+      (if started
+          (let ((n (funcall read buf 0 (length buf))))
+            (and (plusp n) (values buf n)))
+          (loop
+            (unless (= 4 (%read-fully read buf 0 4))
+              (error "cairn: no packfile in upload-pack response"))
+            (when (equalp (subseq buf 0 4) #(#x50 #x41 #x43 #x4b))  ; "PACK"
+              (setf started t)
+              (return (values buf (+ 4 (funcall read buf 4 (length buf))))))
+            (let ((len (or (ignore-errors (parse-integer (map 'string #'code-char (subseq buf 0 4))
+                                                         :radix 16))
+                           (error "cairn: bad pkt-line before the pack"))))
+              (when (> len 4)                                       ; skip its payload
+                (let ((skip (make-array (- len 4) :element-type '(unsigned-byte 8))))
+                  (unless (= (- len 4) (%read-fully read skip 0 (- len 4)))
+                    (error "cairn: upload-pack response cut off"))))))))))
+
+(defun fetch-pack-into (repo base wants &optional haves)
+  "Fetch the pack for WANTS (and HAVES) from BASE and stream it straight into REPO's store,
+   then index it there: the pack is never held in memory.  Returns (values PACK-NAME
+   OBJECT-COUNT OCTETS)."
+  (multiple-value-bind (code hdrs read close)
+      (http-open-body "POST" (format nil "~a/git-upload-pack" base)
+                      :headers (list (cons "Content-Type" "application/x-git-upload-pack-request"))
+                      :body (upload-pack-request wants haves))
+    (declare (ignore hdrs))
+    (unwind-protect
+         (progn
+           (unless (= code 200) (error "cairn: git-upload-pack returned HTTP ~d" code))
+           (receive-pack-stream repo (pack-chunks read)))
+      (funcall close))))
+
 (defun clone (url dest &key (checkout t))
   "Clone the remote git repository at URL (https) into directory DEST.  Fetches
    and indexes the packfile, writes a real .git, and (unless :checkout nil)
@@ -94,9 +148,12 @@
       (declare (ignore caps))
       (let ((wants (refs->wants refs)))
         (format t "~&remote: ~d refs, fetching ~d wanted commits…~%" (length refs) (length wants))
-        (let ((pack (fetch-pack base wants)))
-          (format t "received packfile: ~d bytes~%" (length pack))
-          (finish-clone dest url refs head-target pack checkout))))))
+        (let ((repo (start-clone dest url refs head-target)))
+          (multiple-value-bind (pack-name count octets) (fetch-pack-into repo base wants)
+            (format t "received packfile: ~d bytes~%indexed ~a: ~d objects~%" octets pack-name count))
+          (when checkout
+            (format t "checked out ~d files~%" (checkout repo)))
+          repo)))))
 
 (defun peeled-ref-p (name)
   (and (> (length name) 3) (string= name "^{}" :start1 (- (length name) 3))))
@@ -108,9 +165,9 @@
          unless (or (string= name "HEAD") (peeled-ref-p name)) collect sha)
    :test #'string=))
 
-(defun finish-clone (dest url refs head-target pack checkout)
-  "Lay down a .git for DEST from advertised REFS + fetched PACK, index it, and
-   (optionally) check out.  Shared by HTTP and SSH clone.  Returns the repo."
+(defun start-clone (dest url refs head-target)
+  "Lay down a .git for DEST from advertised REFS -- HEAD, config, refs, no objects yet --
+   and return the repository."
   (let* ((dest (uiop:ensure-directory-pathname dest))
          (git-dir (merge-pathnames ".git/" dest))
          (repo (let ((r (make-repository-on-backend (make-host-backend git-dir)
@@ -126,6 +183,12 @@
     (loop for (name . sha) in refs
           unless (or (string= name "HEAD") (peeled-ref-p name))
             do (fs-write-string repo name (format nil "~a~%" sha)))
+    repo))
+
+(defun finish-clone (dest url refs head-target pack checkout)
+  "Lay down a .git for DEST from advertised REFS + fetched PACK (in memory), index it, and
+   (optionally) check out.  Used by SSH clone.  Returns the repo."
+  (let ((repo (start-clone dest url refs head-target)))
     (multiple-value-bind (pack-name count) (index-pack repo pack)
       (format t "indexed ~a: ~d objects~%" pack-name count))
     (when checkout

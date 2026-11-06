@@ -133,8 +133,11 @@
                           (string= (subseq name (- (length name) 4)) ".idx"))
                   collect (let* ((base (subseq name 0 (- (length name) 4)))
                                  (idx (fs-read-bytes repo (format nil "objects/pack/~a.idx" base)))
-                                 (pk  (fs-read-bytes repo (format nil "objects/pack/~a.pack" base))))
-                            (open-pack-bytes idx pk name)))))
+                                 ;; the pack is read a window at a time when the store can
+                                 ;; do ranged reads, so it is never in memory whole
+                                 (h   (fs-open-input repo (format nil "objects/pack/~a.pack" base))))
+                            (open-pack-bytes idx (if (car h) (make-pack-window h) (cdr h))
+                                             name)))))
   (repo-packs repo))
 
 (defun read-pack-object (repo sha)

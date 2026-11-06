@@ -21,3 +21,11 @@
     (values (seal.http:response-status r)
             (seal.http:response-headers r)
             (seal.http:response-body r))))
+
+(defun http-open-body (method url &key headers body)
+  "Like HTTP-REQUEST, but the body is not read: returns (values STATUS-CODE HEADERS-ALIST
+   READ CLOSE), where (READ BUF START END) pulls the next octets of the body into BUF and
+   returns how many (0 at the end), and (CLOSE) must be called when done."
+  (multiple-value-bind (read code hdrs close)
+      (seal.http:open-body-reader method url :headers headers :body body)
+    (values code hdrs read close)))

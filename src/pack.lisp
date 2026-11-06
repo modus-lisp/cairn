@@ -10,6 +10,95 @@
 
 (defstruct pack path idx pack-data n)
 
+;;; ---- where a pack's bytes come from ----------------------------------------
+;;;
+;;; PACK-DATA is a PACK SOURCE: either the whole pack as an octet vector, or a
+;;; PACK-WINDOW over a file in the store, which holds only the stretch of the pack
+;;; being read.  A clone streams the pack to disk and reads it back through a
+;;; window, so neither indexing nor checkout needs the pack in memory -- only the
+;;; object at hand.
+
+(defstruct (pack-window (:constructor %make-pack-window))
+  handle                                ; an FS-OPEN-INPUT handle
+  (size 0)                              ; the file's length
+  (buf (make-array 0 :element-type '(unsigned-byte 8)))
+  (base 0)                              ; file offset of BUF[0]
+  (len 0))                              ; valid octets in BUF
+
+(defparameter *pack-window-size* 65536
+  "The least a pack window reads from the store at once.")
+
+(defun make-pack-window (handle)
+  (%make-pack-window :handle handle :size (fs-input-size handle)))
+
+(defun psrc-size (src)
+  (if (pack-window-p src) (pack-window-size src) (length src)))
+
+(defun psrc-ensure (src off n)
+  "Make the N octets at OFF readable (fewer at the end of the pack).  Returns (values
+   VECTOR INDEX): they are VECTOR[INDEX..INDEX+N).  The vector is only good until the
+   next call on SRC."
+  (if (not (pack-window-p src))
+      (values src off)
+      (let ((base (pack-window-base src)))
+        (if (and (>= off base) (<= (+ off n) (+ base (pack-window-len src))))
+            (values (pack-window-buf src) (- off base))
+            (let* ((want (max 0 (min (max n *pack-window-size*) (- (pack-window-size src) off))))
+                   (buf (pack-window-buf src)))
+              (when (< (length buf) want)
+                (setf buf (make-array (max want (* 2 (length buf))) :element-type '(unsigned-byte 8))
+                      (pack-window-buf src) buf))
+              (setf (pack-window-len src) 0 (pack-window-base src) off)
+              (let ((got (fs-read-into (pack-window-handle src) off buf 0 want)))
+                (unless (= got want)
+                  (error "cairn: pack store returned ~d of ~d octets at ~d" got want off))
+                (setf (pack-window-len src) got))
+              (values buf 0))))))
+
+(defun psrc-byte (src off)
+  (multiple-value-bind (v i) (psrc-ensure src off 1) (aref v i)))
+
+(defun psrc-subseq (src start end)
+  (multiple-value-bind (v i) (psrc-ensure src start (- end start))
+    (subseq v i (+ i (- end start)))))
+
+(defun psrc-inflate (src pos size)
+  "Inflate the zlib stream at POS, which expands to SIZE octets.  Returns (values CONTENT
+   CONSUMED).  From a window, the read is sized from SIZE (zlib's own bound on how big a
+   stream of SIZE octets can be), and doubled if the stream turns out longer."
+  (if (not (pack-window-p src))
+      (multiple-value-bind (content end) (cram:zlib-decompress src :start pos)
+        (values content (- end pos)))
+      (let* ((left (- (pack-window-size src) pos))
+             (n (min left (+ size (ash size -12) (ash size -14) 4096))))
+        (loop
+          (multiple-value-bind (v i) (psrc-ensure src pos n)
+            (handler-case
+                (multiple-value-bind (content end) (cram:zlib-decompress v :start i :end (+ i n))
+                  (return (values content (- end i))))
+              (error (e)
+                (if (< n left)
+                    (setf n (min left (* 2 n)))
+                    (error e)))))))))
+
+(defun pack-object-header (src pos)
+  "Parse the object header at POS.  Returns (values TYPE SIZE POS-AFTER)."
+  (multiple-value-bind (v i) (psrc-ensure src pos 16)
+    (let* ((b (aref v i)) (type (logand (ash b -4) 7)) (size (logand b 15)) (shift 4) (k 1))
+      (loop while (logtest b #x80) do
+        (setf b (aref v (+ i k))) (incf k)
+        (setf size (logior size (ash (logand b #x7f) shift))) (incf shift 7))
+      (values type size (+ pos k)))))
+
+(defun pack-ofs-base (src pos)
+  "Parse an ofs-delta's base distance at POS.  Returns (values DISTANCE POS-AFTER)."
+  (multiple-value-bind (v i) (psrc-ensure src pos 16)
+    (let* ((k 0) (b (aref v i)) (rel (logand b #x7f)))
+      (loop while (logtest b #x80) do
+        (incf k) (setf b (aref v (+ i k)))
+        (setf rel (logior (ash (1+ rel) 7) (logand b #x7f))))
+      (values rel (+ pos k 1)))))
+
 (declaim (inline be32))
 (defun be32 (bytes off)
   (logior (ash (aref bytes off) 24) (ash (aref bytes (+ off 1)) 16)
@@ -61,29 +150,21 @@
 (defun pack-read-at (pack offset repo)
   "Return (values TYPE-KEYWORD CONTENT-BYTES) for the object at OFFSET in PACK,
    resolving ofs/ref deltas against their base objects."
-  (let* ((data (pack-pack-data pack)) (pos offset)
-         (b (aref data pos)) (type (logand (ash b -4) 7)) (size (logand b 15)) (shift 4))
-    (declare (ignorable size))
-    (incf pos)
-    (loop while (logtest b #x80) do
-      (setf b (aref data pos)) (incf pos)
-      (setf size (logior size (ash (logand b #x7f) shift))) (incf shift 7))
-    (case type
-      ((1 2 3 4) (values (pack-type-keyword type) (zlib-decompress data pos)))
-      (6                                                        ; ofs-delta
-       (let ((base-rel (logand (aref data pos) #x7f)))
-         (loop while (logtest (aref data pos) #x80) do
-           (incf pos)
-           (setf base-rel (logior (ash (1+ base-rel) 7) (logand (aref data pos) #x7f))))
-         (incf pos)
-         (multiple-value-bind (btype bcontent) (pack-read-at pack (- offset base-rel) repo)
-           (values btype (apply-delta bcontent (zlib-decompress data pos))))))
-      (7                                                        ; ref-delta
-       (let ((base-sha (bytes->hex (subseq data pos (+ pos (oid-nbytes))))))
-         (incf pos (oid-nbytes))
-         (multiple-value-bind (btype bcontent) (read-object repo base-sha)
-           (values btype (apply-delta bcontent (zlib-decompress data pos))))))
-      (t (error "cairn: unknown pack object type ~d" type)))))
+  (let ((src (pack-pack-data pack)))
+    (multiple-value-bind (type size pos) (pack-object-header src offset)
+      (case type
+        ((1 2 3 4) (values (pack-type-keyword type) (values (psrc-inflate src pos size))))
+        (6                                                      ; ofs-delta
+         (multiple-value-bind (rel pos) (pack-ofs-base src pos)
+           (let ((delta (values (psrc-inflate src pos size))))
+             (multiple-value-bind (btype bcontent) (pack-read-at pack (- offset rel) repo)
+               (values btype (apply-delta bcontent delta))))))
+        (7                                                      ; ref-delta
+         (let ((base-sha (bytes->hex (psrc-subseq src pos (+ pos (oid-nbytes)))))
+               (delta (values (psrc-inflate src (+ pos (oid-nbytes)) size))))
+           (multiple-value-bind (btype bcontent) (read-object repo base-sha)
+             (values btype (apply-delta bcontent delta)))))
+        (t (error "cairn: unknown pack object type ~d" type))))))
 
 (defun apply-delta (base delta)
   "Apply a git delta (copy-from-base / insert-literal instructions) to BASE."

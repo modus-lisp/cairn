@@ -29,7 +29,17 @@
   ;; every write between begin and end lands together or not at all.  NIL = the
   ;; writes are independent (host/cabinet: each write is its own unit).
   begin-txn             ; ()               -> t                open a batching txn
-  end-txn)              ; (commit-p)        -> t                commit it, or abort
+  end-txn               ; (commit-p)        -> t                commit it, or abort
+  ;; Optional streaming, for files too big to hold in memory (a fetched pack).  A
+  ;; backend without them gets the whole-file fallbacks below, which are correct
+  ;; but hold the file in memory.
+  write-stream          ; (relpath next)   -> n-bytes          create/replace from chunks:
+                        ;   NEXT returns (values u8v end) or NIL; the vector may be reused
+  open-input            ; (relpath)        -> (handle | nil)   for ranged reads
+  read-into             ; (handle off buf start end) -> n      0 at end of file
+  input-size            ; (handle)         -> n-bytes
+  close-input           ; (handle)         -> t
+  rename-file)          ; (from to)        -> t                replace TO
 
 ;;; ---- the wrappers cairn's store code calls ---------------------------------
 
@@ -45,6 +55,56 @@
 (defun fs-dir-exists-p (repo rel)       (funcall (fsb-dir-exists-p (repo-fsb repo)) rel))
 (defun fs-list-files  (repo rel)        (funcall (fsb-list-files  (repo-fsb repo)) rel))
 (defun fs-walk-files  (repo rel)        (funcall (fsb-walk-files  (repo-fsb repo)) rel))
+
+;;; Streaming, with whole-file fallbacks for a backend that has no streaming of its own.
+
+(defun fs-write-stream (repo rel next)
+  "Create or replace REL with the chunks NEXT yields ((values u8v end) or NIL).  Returns
+   the length.  Streams to the store when the backend can; otherwise collects the chunks."
+  (let ((be (repo-fsb repo)))
+    (if (fsb-write-stream be)
+        (funcall (fsb-write-stream be) rel next)
+        (let ((out (make-array 65536 :element-type '(unsigned-byte 8) :adjustable t :fill-pointer 0)))
+          (loop (multiple-value-bind (v end) (funcall next)
+                  (unless v (return))
+                  (let* ((end (or end (length v))) (fp (fill-pointer out)))
+                    (when (> (+ fp end) (array-dimension out 0))
+                      (setf out (adjust-array out (max (+ fp end) (* 2 (array-dimension out 0))))))
+                    (setf (fill-pointer out) (+ fp end))
+                    (replace out v :start1 fp :end2 end))))
+          (fs-write-bytes repo rel (coerce out 'u8v))
+          (length out)))))
+
+(defun fs-open-input (repo rel)
+  "A handle for reading REL a range at a time (FS-READ-INTO), or NIL if it does not exist."
+  (let ((be (repo-fsb repo)))
+    (if (fsb-open-input be)
+        (let ((h (funcall (fsb-open-input be) rel))) (and h (cons be h)))
+        (let ((bytes (fs-read-bytes repo rel))) (and bytes (cons nil bytes))))))
+
+(defun fs-read-into (h offset buf start end)
+  "Read from OFFSET of the file open as H into BUF[START..END).  Returns how many octets."
+  (if (car h)
+      (funcall (fsb-read-into (car h)) (cdr h) offset buf start end)
+      (let ((n (max 0 (min (- end start) (- (length (cdr h)) offset)))))
+        (replace buf (cdr h) :start1 start :end1 (+ start n) :start2 offset)
+        n)))
+
+(defun fs-input-size (h)
+  (if (car h) (funcall (fsb-input-size (car h)) (cdr h)) (length (cdr h))))
+
+(defun fs-close-input (h)
+  (when (and (car h) (fsb-close-input (car h))) (funcall (fsb-close-input (car h)) (cdr h)))
+  t)
+
+(defun fs-rename-file (repo from to)
+  "Rename FROM to TO, replacing TO."
+  (let ((be (repo-fsb repo)))
+    (if (fsb-rename-file be)
+        (funcall (fsb-rename-file be) from to)
+        (progn (fs-write-bytes repo to (fs-read-bytes repo from))
+               (fs-delete-file repo from)))
+    t))
 
 (defun loose-object-relpath (sha)
   "The git-dir-relative path of the loose object named SHA (hex)."
@@ -131,4 +191,30 @@
                      (let ((d (full rel)))
                        (when (uiop:directory-exists-p d)
                          (mapcar #'file-namestring (uiop:directory-files d)))))
-     :walk-files   (lambda (rel) (host-walk-files (full rel) git-dir)))))
+     :walk-files   (lambda (rel) (host-walk-files (full rel) git-dir))
+     :write-stream (lambda (rel next)
+                     (let ((p (full rel)) (n 0))
+                       (ensure-directories-exist p)
+                       (with-open-file (s p :element-type '(unsigned-byte 8) :direction :output
+                                            :if-exists :supersede :if-does-not-exist :create)
+                         (loop (multiple-value-bind (v end) (funcall next)
+                                 (unless v (return))
+                                 (let ((end (or end (length v))))
+                                   (write-sequence v s :end end)
+                                   (incf n end)))))
+                       n))
+     ;; A handle is an open stream, so a pack being read for a whole checkout costs one
+     ;; open; CLOSE-INPUT closes it.
+     :open-input   (lambda (rel)
+                     (let ((p (full rel)))
+                       (when (probe-file p) (open p :element-type '(unsigned-byte 8)))))
+     :read-into    (lambda (s off buf start end)
+                     (file-position s off)
+                     (- (read-sequence buf s :start start :end end) start))
+     :input-size   (lambda (s) (file-length s))
+     :close-input  (lambda (s) (close s) t)
+     :rename-file  (lambda (from to)
+                     (let ((to (full to)))
+                       (when (probe-file to) (delete-file to))
+                       (rename-file (full from) to)
+                       t)))))

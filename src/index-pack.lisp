@@ -23,99 +23,116 @@
 
 (defstruct pobj offset end kind type size payload-off base-off base-sha sha sha-bytes crc raw)
 
-(defun inflate-at (data pos uncompressed-size)
-  "Inflate the zlib stream in DATA starting at POS, known to expand to
-   UNCOMPRESSED-SIZE bytes.  Returns (values CONTENT BYTES-CONSUMED) — the
-   consumed count locates the next object in the pack."
-  (multiple-value-bind (content end) (cram:zlib-decompress data :start pos)
-    (unless (= (length content) uncompressed-size)
-      (error "cairn: pack object inflated to ~d, header said ~d" (length content) uncompressed-size))
-    (values content (- end pos))))          ; consumed is relative to POS (see :end (+ pos consumed))
+(defvar *index-pack-retain* (* 8 1024 1024)
+  "How many octets of inflated objects the scan may keep for the resolve phase.  An object
+   past this budget is inflated again when its delta tree is resolved, so indexing a big pack
+   costs a second inflate of part of it instead of memory proportional to the pack.")
 
-(defun inflate-payload (data o)
-  "The object's own payload — base content, or a delta's instruction stream."
-  (values (inflate-at data (pobj-payload-off o) (pobj-size o))))
+(defun %crc32-update (c bytes start end)
+  "Advance the CRC-32 register C (pre-inverted) over BYTES[START..END)."
+  (loop for i from start below end do
+    (setf c (logxor (ash c -8) (aref *crc32-table* (logand (logxor c (aref bytes i)) #xff)))))
+  c)
 
-(defun scan-pack-object (data pos)
-  "Parse the object header at POS and locate its END (by inflating to find the
-   zlib stream boundary, discarding the output — so the scan holds only one
-   object's worth of memory).  Returns a POBJ with structure but no content."
-  (let* ((start pos)
-         (b (aref data pos)) (type (logand (ash b -4) 7)) (size (logand b 15)) (shift 4))
-    (incf pos)
-    (loop while (logtest b #x80) do
-      (setf b (aref data pos)) (incf pos)
-      (setf size (logior size (ash (logand b #x7f) shift))) (incf shift 7))
-    (flet ((pobj (&rest args)                              ; inflate the payload once, keep it
-             (multiple-value-bind (content consumed) (inflate-at data pos size)
-               (apply #'make-pobj :offset start :end (+ pos consumed) :size size
-                      :payload-off pos :raw content args))))
-      (ecase type
-        ((1 2 3 4) (pobj :kind :base :type type))
-        (6                                                 ; ofs-delta
-         (let ((base-rel (logand (aref data pos) #x7f)))
-           (loop while (logtest (aref data pos) #x80) do
-             (incf pos)
-             (setf base-rel (logior (ash (1+ base-rel) 7) (logand (aref data pos) #x7f))))
-           (incf pos)
-           (pobj :kind :ofs-delta :base-off (- start base-rel))))
-        (7                                                 ; ref-delta
-         (let ((base-sha (bytes->hex (subseq data pos (+ pos (oid-nbytes))))))
-           (incf pos (oid-nbytes))
-           (pobj :kind :ref-delta :base-sha base-sha)))))))
+(defun %psrc-crc-and-hash (src start end hash)
+  "CRC-32 of the pack's octets [START, END), feeding the same octets to the SHA-1 state HASH
+   (when it is not NIL) on the way.  Reads a window at a time."
+  (let ((c #xffffffff) (pos start))
+    (loop while (< pos end) do
+      (let ((n (min (- end pos) *pack-window-size*)))
+        (multiple-value-bind (v i) (psrc-ensure src pos n)
+          (setf c (%crc32-update c v i (+ i n)))
+          (when hash (seal:sha1-update hash v i (+ i n))))
+        (incf pos n)))
+    (logxor c #xffffffff)))
+
+(defun inflate-payload (src o)
+  "The object's own payload -- base content, or a delta's instruction stream -- taking it
+   from the scan if the scan kept it (and then letting it go), else inflating it again."
+  (or (shiftf (pobj-raw o) nil)
+      (multiple-value-bind (content consumed) (psrc-inflate src (pobj-payload-off o) (pobj-size o))
+        (declare (ignore consumed))
+        (unless (= (length content) (pobj-size o))
+          (error "cairn: pack object inflated to ~d, header said ~d" (length content) (pobj-size o)))
+        content)))
+
+(defun scan-pack-object (src pos keep)
+  "Parse the object header at POS and find its END by inflating its stream.  Returns a POBJ;
+   the inflated payload is kept in its RAW slot only when KEEP is true."
+  (multiple-value-bind (type size p) (pack-object-header src pos)
+    (let ((base-off nil) (base-sha nil) (kind :base))
+      (case type
+        ((1 2 3 4))
+        (6 (multiple-value-bind (rel after) (pack-ofs-base src p)
+             (setf kind :ofs-delta base-off (- pos rel) p after)))
+        (7 (setf kind :ref-delta
+                 base-sha (bytes->hex (psrc-subseq src p (+ p (oid-nbytes)))))
+           (incf p (oid-nbytes)))
+        (t (error "cairn: unknown pack object type ~d at ~d" type pos)))
+      (multiple-value-bind (content consumed) (psrc-inflate src p size)
+        (unless (= (length content) size)
+          (error "cairn: pack object inflated to ~d, header said ~d" (length content) size))
+        (make-pobj :offset pos :end (+ p consumed) :kind kind :type type :size size
+                   :payload-off p :base-off base-off :base-sha base-sha
+                   :raw (and keep content))))))
 
 (defun index-pack-objects (data &optional repo)
-  "Walk packfile DATA, resolve all deltas, and return a vector of POBJ with
-   :sha / :sha-bytes / :crc filled in.  Verifies the trailing pack checksum.
-   REPO, if given, lets a *thin* pack (from a fetch with `have`s) resolve
-   ref-deltas whose base is not in the pack but already in the object store.
+  "Walk the pack DATA -- an octet vector, or a PACK-WINDOW over the pack in the store --
+   resolve all deltas, and return a vector of POBJ with :sha / :sha-bytes / :crc filled in.
+   Verifies the trailing pack checksum.  REPO, if given, lets a *thin* pack (from a fetch
+   with `have`s) resolve ref-deltas whose base is not in the pack but already in the store.
 
-   Memory is bounded by the deepest delta chain, not the pack size: a scan
-   records object boundaries + CRCs without keeping any content, and resolution
-   is a depth-first walk of the delta tree that holds only the objects on the
-   current root-to-leaf path (git's approach).  So a large repo no longer needs
-   the whole expanded history resident at once."
-  (unless (and (= (aref data 0) (char-code #\P)) (= (aref data 1) (char-code #\A))
-               (= (aref data 2) (char-code #\C)) (= (aref data 3) (char-code #\K)))
-    (error "cairn: not a packfile (bad magic)"))
-  (let* ((n (be32 data 8))
+   Memory is bounded by the deepest delta chain and *INDEX-PACK-RETAIN*, not the pack: the
+   scan records each object's extent and CRC, keeping inflated content only within that
+   budget, and resolution is a depth-first walk of the delta tree that holds only the
+   objects on the current root-to-leaf path (git's approach)."
+  (let ((magic (psrc-subseq data 0 4)))
+    (unless (equalp magic #(80 65 67 75))                    ; "PACK"
+      (error "cairn: not a packfile (bad magic)")))
+  (let* ((n (multiple-value-bind (v i) (psrc-ensure data 8 4) (be32 v i)))
          (objs (make-array n))
          (by-offset (make-hash-table))
          (by-sha (make-hash-table :test 'equal))
          (children (make-hash-table))                       ; base offset -> child indices
+         (hash (and (eq *oid* :sha1) (seal:sha1-init)))
+         (kept 0)
          (pos 12))
-    ;; pass 1 — scan boundaries + CRC, retaining no content
-    (dotimes (i n)                                            ; CRC deferred to the parallel phase
-      (let ((o (scan-pack-object data pos)))
+    (when hash (multiple-value-bind (v i) (psrc-ensure data 0 12) (seal:sha1-update hash v i (+ i 12))))
+    ;; pass 1 -- object extents, CRCs and the pack checksum, in one sequential pass
+    (dotimes (i n)
+      (let* ((keep (<= kept *index-pack-retain*))
+             (o (scan-pack-object data pos keep)))
+        (when (pobj-raw o) (incf kept (length (pobj-raw o))))
+        (setf (pobj-crc o) (%psrc-crc-and-hash data (pobj-offset o) (pobj-end o) hash))
         (setf (aref objs i) o
               (gethash (pobj-offset o) by-offset) o
               pos (pobj-end o))
         (when (eq (pobj-kind o) :ofs-delta)
           (push i (gethash (pobj-base-off o) children)))))
-    (let ((trailer (subseq data pos (+ pos (oid-nbytes)))))
-      (unless (equalp trailer (oid-digest (subseq data 0 pos)))
+    (let ((trailer (psrc-subseq data pos (+ pos (oid-nbytes)))))
+      (unless (equalp trailer (if hash (seal:sha1-final hash) (oid-digest (psrc-subseq data 0 pos))))
         (error "cairn: pack checksum mismatch")))
     ;; ---- resolve deltas ------------------------------------------------------
-    ;; Each base object's delta subtree is independent, so we fan the subtrees
-    ;; across a worker pool: a worker inflates a base, hashes it, and pushes its
-    ;; content down to its ofs-delta children (apply-delta) recursively.  During
-    ;; this phase workers only READ the shared scan tables and write their own
-    ;; objects' fields — no shared writes, no locks — so it scales across cores.
+    ;; Each base object's delta subtree is independent, so an in-memory pack fans the
+    ;; subtrees across a worker pool: a worker inflates a base, hashes it, and pushes its
+    ;; content down to its ofs-delta children (apply-delta) recursively.  Workers only READ
+    ;; the shared scan tables and write their own objects' fields.  A pack read through a
+    ;; window resolves on one thread: the window is one cursor.
     (labels ((resolve-subtree (o type content)
                (setf (pobj-type o) type
-                     (pobj-crc o) (crc32 data (pobj-offset o) (pobj-end o))
                      (pobj-sha o) (hash-object type content)
                      (pobj-sha-bytes o) (hex->bytes (pobj-sha o)))
                (dolist (ci (gethash (pobj-offset o) children))
                  (let ((c (aref objs ci)))
-                   (resolve-subtree c type (apply-delta content (pobj-raw c))))))
+                   (resolve-subtree c type (apply-delta content (inflate-payload data c))))))
              (root (o)
-               (resolve-subtree o (pack-type-keyword (pobj-type o)) (pobj-raw o))))
+               (resolve-subtree o (pack-type-keyword (pobj-type o)) (inflate-payload data o))))
       (let* ((roots (coerce (loop for o across objs when (eq (pobj-kind o) :base) collect o)
                             'simple-vector))
              (nroots (length roots))
              (oid *oid*)
-             (nthreads (if (< nroots 256) 1 (max 1 (min *index-pack-threads* nroots))))
+             (nthreads (if (or (< nroots 256) (pack-window-p data)) 1
+                           (max 1 (min *index-pack-threads* nroots))))
              (next 0) (lock (sb-thread:make-mutex)) (err nil))
         (if (= nthreads 1)
             (loop for o across roots do (root o))
@@ -136,11 +153,11 @@
     (loop for o across objs when (pobj-sha o) do (setf (gethash (pobj-sha o) by-sha) o))
     (labels ((content-of (o)
                (ecase (pobj-kind o)
-                 (:base (values (pobj-type o) (pobj-raw o)))
+                 (:base (values (pobj-type o) (inflate-payload data o)))
                  (:ofs-delta (multiple-value-bind (bt bc) (content-of (gethash (pobj-base-off o) by-offset))
-                               (values bt (apply-delta bc (pobj-raw o)))))
+                               (values bt (apply-delta bc (inflate-payload data o)))))
                  (:ref-delta (multiple-value-bind (bt bc) (ref-base-content o)
-                               (values bt (apply-delta bc (pobj-raw o)))))))
+                               (values bt (apply-delta bc (inflate-payload data o)))))))
              (ref-base-content (o)
                (let ((base (gethash (pobj-base-sha o) by-sha)))
                  (if base (content-of base)
@@ -149,17 +166,16 @@
                                   (pobj-base-sha o)))))
              (rec (o type content)
                (setf (pobj-type o) type (pobj-sha o) (hash-object type content)
-                     (pobj-crc o) (crc32 data (pobj-offset o) (pobj-end o))
                      (pobj-sha-bytes o) (hex->bytes (pobj-sha o))
                      (gethash (pobj-sha o) by-sha) o)
                (dolist (ci (gethash (pobj-offset o) children))
                  (let ((c (aref objs ci)))
-                   (rec c type (apply-delta content (pobj-raw c)))))))
+                   (rec c type (apply-delta content (inflate-payload data c)))))))
       (loop for o across objs when (null (pobj-sha o)) do
         (multiple-value-bind (type content)
             (if (eq (pobj-kind o) :ref-delta)
                 (multiple-value-bind (bt bc) (ref-base-content o)
-                  (values bt (apply-delta bc (pobj-raw o))))
+                  (values bt (apply-delta bc (inflate-payload data o))))
                 (content-of o))
           (rec o type content))))
     objs))
@@ -215,3 +231,41 @@
     (fs-write-bytes repo (format nil "objects/pack/~a.pack" name) pack-bytes)
     (fs-write-bytes repo (format nil "objects/pack/~a.idx" name) idx)
     (values name (length objs))))
+
+;;; ---- a pack that never has to be in memory ----------------------------------
+
+(defparameter *incoming-pack* "objects/pack/incoming.pack"
+  "Where a pack being received is written before it has a name.")
+
+(defun index-pack-file (repo rel)
+  "Index the pack already in the store at REL, read back a window at a time, then move it to
+   objects/pack/pack-<checksum>.pack beside its .idx.  Returns (values PACK-NAME
+   OBJECT-COUNT)."
+  (let ((h (or (fs-open-input repo rel) (error "cairn: no pack at ~a" rel)))
+        name count idx)
+    (unwind-protect
+         (let* ((src (make-pack-window h))
+                (objs (index-pack-objects src repo))
+                (checksum (psrc-subseq src (- (psrc-size src) (oid-nbytes)) (psrc-size src))))
+           (setf name (format nil "pack-~a" (bytes->hex checksum))
+                 count (length objs)
+                 idx (build-pack-index objs checksum)))
+      (fs-close-input h))
+    ;; the pack under its name first: an .idx is what makes a pack visible, so it must not
+    ;; point at a pack that is not there yet
+    (fs-rename-file repo rel (format nil "objects/pack/~a.pack" name))
+    (fs-write-bytes repo (format nil "objects/pack/~a.idx" name) idx)
+    (values name count)))
+
+(defun receive-pack-stream (repo next)
+  "Write the pack NEXT yields (chunks as (values u8v end), then NIL) into REPO's store and
+   index it from there, holding no more of it in memory than a window.  Returns (values
+   PACK-NAME OBJECT-COUNT OCTETS)."
+  (let ((ok nil) (octets 0))
+    (unwind-protect
+         (progn
+           (setf octets (fs-write-stream repo *incoming-pack* next))
+           (multiple-value-bind (name count) (index-pack-file repo *incoming-pack*)
+             (setf ok t)
+             (values name count octets)))
+      (unless ok (ignore-errors (fs-delete-file repo *incoming-pack*))))))
