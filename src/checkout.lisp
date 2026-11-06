@@ -28,10 +28,23 @@
              (wt-make-symlink repo relpath (ascii target))
              (vector-push-extend (stat-index-entry repo relpath (tree-entry-sha e) mode) entries)))
           (t                                             ; regular / executable file
-           (multiple-value-bind (bt blob) (read-object repo (tree-entry-sha e))
-             (declare (ignore bt))
-             (wt-write-file repo relpath blob (string= mode "100755"))
-             (vector-push-extend (stat-index-entry repo relpath (tree-entry-sha e) mode) entries))))))))
+           (if (wtb-open-output (repo-wtb repo))
+               (checkout-blob repo (tree-entry-sha e) relpath (string= mode "100755"))
+               (multiple-value-bind (bt blob) (read-object repo (tree-entry-sha e))
+                 (declare (ignore bt))
+                 (wt-write-file repo relpath blob (string= mode "100755"))))
+           (vector-push-extend (stat-index-entry repo relpath (tree-entry-sha e) mode) entries)))))))
+
+(defun checkout-blob (repo sha relpath exec)
+  "Write the blob SHA to RELPATH by streaming it from the pack into the file, so a blob of any
+   size costs a few buffers (object-stream.lisp)."
+  (let ((h (wt-open-output repo relpath exec)) (ok nil))
+    (unwind-protect
+         (progn (stream-object repo sha (lambda (type size)
+                                          (declare (ignore type size))
+                                          (lambda (buf start end) (wt-write-output h buf start end))))
+                (setf ok t))
+      (wt-close-output h :abort (not ok)))))
 
 (defun checkout (repo &optional (commit (head-commit repo)))
   "Materialise COMMIT (default HEAD) into REPO's working directory and write the
@@ -48,4 +61,5 @@
             unless (gethash (ie-path e) kept)
               do (wt-delete-file repo (ie-path e))))
     (write-index repo entries)
+    (delete-scratch-files repo)
     (length entries))))

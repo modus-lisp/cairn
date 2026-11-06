@@ -69,12 +69,24 @@
                  base-sha (bytes->hex (psrc-subseq src p (+ p (oid-nbytes)))))
            (incf p (oid-nbytes)))
         (t (error "cairn: unknown pack object type ~d at ~d" type pos)))
-      (multiple-value-bind (content consumed) (psrc-inflate src p size)
-        (unless (= (length content) size)
-          (error "cairn: pack object inflated to ~d, header said ~d" (length content) size))
-        (make-pobj :offset pos :end (+ p consumed) :kind kind :type type :size size
-                   :payload-off p :base-off base-off :base-sha base-sha
-                   :raw (and keep content))))))
+      ;; streamed: the scan needs only the stream's length, so a big object is inflated into a
+      ;; sink that keeps nothing, and a small one (within the budget) into the vector kept
+      (let* ((content (and keep (<= size *stream-in-memory-limit*)
+                           (make-array size :element-type '(unsigned-byte 8))))
+             (i 0))
+        (multiple-value-bind (n consumed)
+            (psrc-inflate-to src p (if content
+                                       (lambda (buf start end)
+                                         (when (> (+ i (- end start)) size)
+                                           (error "cairn: pack object inflates past its size ~d" size))
+                                         (replace content buf :start1 i :start2 start :end2 end)
+                                         (incf i (- end start)))
+                                       (lambda (buf start end) (declare (ignore buf start end)))))
+          (unless (= n size)
+            (error "cairn: pack object inflated to ~d, header said ~d" n size))
+          (make-pobj :offset pos :end (+ p consumed) :kind kind :type type :size size
+                     :payload-off p :base-off base-off :base-sha base-sha
+                     :raw content))))))
 
 (defun index-pack-objects (data &optional repo)
   "Walk the pack DATA -- an octet vector, or a PACK-WINDOW over the pack in the store --
@@ -113,11 +125,54 @@
       (unless (equalp trailer (if hash (seal:sha1-final hash) (oid-digest (psrc-subseq data 0 pos))))
         (error "cairn: pack checksum mismatch")))
     ;; ---- resolve deltas ------------------------------------------------------
+    ;; A pack read from the store resolves by streaming (object-stream.lisp): each object is
+    ;; inflated straight into its SHA-1, and kept -- in memory, or in a scratch file when big
+    ;; -- only if a delta needs it as a base.  That bounds memory by a few buffers and
+    ;; *STREAM-IN-MEMORY-LIMIT* per level of delta chain, whatever the objects' sizes.
+    (when (and (pack-window-p data) repo)
+      (labels ((stream-resolve (o type base depth)
+                 (let ((kids (gethash (pobj-offset o) children))
+                       (hash-finish nil) (base-finish nil)
+                       (raw (shiftf (pobj-raw o) nil)))
+                   (flet ((start (type size)
+                            (multiple-value-bind (hs hfin) (make-oid-sink type size)
+                              (setf hash-finish hfin)
+                              (if kids
+                                  (multiple-value-bind (bs bfin) (make-base-collector repo depth size)
+                                    (setf base-finish bfin)
+                                    (tee-sinks hs bs))
+                                  hs)))
+                          (feed (sink)
+                            (if raw
+                                (progn (funcall sink raw 0 (length raw)) (length raw))
+                                (values (psrc-inflate-to data (pobj-payload-off o) sink)))))
+                     (if (null base)
+                         (let ((n (feed (start type (pobj-size o)))))
+                           (unless (= n (pobj-size o))
+                             (error "cairn: pack object inflated to ~d, header said ~d" n (pobj-size o))))
+                         (multiple-value-bind (sink finish)
+                             (make-delta-sink base (lambda (rsize) (start type rsize)))
+                           (feed sink)
+                           (funcall finish))))
+                   (setf (pobj-type o) type
+                         (pobj-sha o) (funcall hash-finish)
+                         (pobj-sha-bytes o) (hex->bytes (pobj-sha o)))
+                   (when kids
+                     (let ((b (funcall base-finish)))
+                       (unwind-protect
+                            (dolist (ci kids) (stream-resolve (aref objs ci) type b (1+ depth)))
+                         (release-base b)))))))
+        (unwind-protect
+             (loop for o across objs
+                   when (eq (pobj-kind o) :base)
+                     do (stream-resolve o (pack-type-keyword (pobj-type o)) nil 0))
+          (delete-scratch-files repo))))
     ;; Each base object's delta subtree is independent, so an in-memory pack fans the
     ;; subtrees across a worker pool: a worker inflates a base, hashes it, and pushes its
     ;; content down to its ofs-delta children (apply-delta) recursively.  Workers only READ
     ;; the shared scan tables and write their own objects' fields.  A pack read through a
     ;; window resolves on one thread: the window is one cursor.
+    (unless (and (pack-window-p data) repo)
     (labels ((resolve-subtree (o type content)
                (setf (pobj-type o) type
                      (pobj-sha o) (hash-object type content)
@@ -147,7 +202,7 @@
                          (error (e) (sb-thread:with-mutex (lock) (unless err (setf err e))))))))
               (mapc #'sb-thread:join-thread
                     (loop repeat nthreads collect (sb-thread:make-thread #'worker)))
-              (when err (error err))))))
+              (when err (error err)))))))
     ;; the rare ref-deltas (thin-pack fetches / non-ofs packs) resolve against the
     ;; now-known SHAs, sequentially
     (loop for o across objs when (pobj-sha o) do (setf (gethash (pobj-sha o) by-sha) o))

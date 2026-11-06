@@ -22,6 +22,7 @@ libgit2, no libcurl, no shelling out to git, no FFI."
      (:file "refs")
      (:file "pack")
      (:file "repository")
+     (:file "object-stream")
      (:file "plumbing")
      (:file "write")
      (:file "index")

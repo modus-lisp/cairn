@@ -39,7 +39,10 @@
   read-into             ; (handle off buf start end) -> n      0 at end of file
   input-size            ; (handle)         -> n-bytes
   close-input           ; (handle)         -> t
-  rename-file)          ; (from to)        -> t                replace TO
+  rename-file           ; (from to)        -> t                replace TO
+  open-output           ; (relpath)        -> handle           create/replace, pushed in pieces
+  write-output          ; (handle buf start end) -> t
+  close-output)         ; (handle abort)   -> t                ABORT: leave RELPATH as it was
 
 ;;; ---- the wrappers cairn's store code calls ---------------------------------
 
@@ -97,6 +100,36 @@
   (when (and (car h) (fsb-close-input (car h))) (funcall (fsb-close-input (car h)) (cdr h)))
   t)
 
+(defun fs-open-output (repo rel)
+  "Begin writing REL a piece at a time (FS-WRITE-OUTPUT, FS-CLOSE-OUTPUT).  Straight to the
+   store when the backend can; otherwise the pieces are collected and written at the close."
+  (let ((be (repo-fsb repo)))
+    (if (fsb-open-output be)
+        (cons be (funcall (fsb-open-output be) rel))
+        (cons nil (list repo rel (make-array 4096 :element-type '(unsigned-byte 8)
+                                                  :adjustable t :fill-pointer 0))))))
+
+(defun %collect-octets (out buf start end)
+  (let ((fp (fill-pointer out)) (n (- end start)))
+    (when (> (+ fp n) (array-dimension out 0))
+      (setf out (adjust-array out (max (+ fp n) (* 2 (array-dimension out 0))))))
+    (setf (fill-pointer out) (+ fp n))
+    (replace out buf :start1 fp :start2 start :end2 end)
+    out))
+
+(defun fs-write-output (h buf start end)
+  (if (car h)
+      (funcall (fsb-write-output (car h)) (cdr h) buf start end)
+      (setf (third (cdr h)) (%collect-octets (third (cdr h)) buf start end)))
+  t)
+
+(defun fs-close-output (h &key abort)
+  (if (car h)
+      (funcall (fsb-close-output (car h)) (cdr h) abort)
+      (destructuring-bind (repo rel out) (cdr h)
+        (unless abort (fs-write-bytes repo rel (coerce out 'u8v)))))
+  t)
+
 (defun fs-rename-file (repo from to)
   "Rename FROM to TO, replacing TO."
   (let ((be (repo-fsb repo)))
@@ -149,7 +182,12 @@
   delete-file           ; (rel)              -> t               absent is fine
   exists-p              ; (rel)              -> boolean         anything present at REL
   lstat                 ; (rel)              -> (wt-stat | nil) no symlink following
-  walk)                 ; (reldir)           -> (relpath …)     files under reldir, minus .git
+  walk                  ; (reldir)           -> (relpath …)     files under reldir, minus .git
+  ;; Optional: a regular file written in pieces, so checkout can stream a big blob into
+  ;; place.  A backend without them gets WRITE-FILE of the collected pieces.
+  open-output           ; (rel exec)         -> handle
+  write-output          ; (handle buf start end) -> t
+  close-output)         ; (handle abort)     -> t
 
 (defun repo-wtb (repo)
   (or (repo-worktree repo) (error "cairn: repository has no working tree (bare?)")))
@@ -162,6 +200,27 @@
 (defun wt-exists-p     (repo rel)          (funcall (wtb-exists-p    (repo-wtb repo)) rel))
 (defun wt-lstat        (repo rel)          (funcall (wtb-lstat       (repo-wtb repo)) rel))
 (defun wt-walk         (repo rel)          (funcall (wtb-walk        (repo-wtb repo)) rel))
+
+(defun wt-open-output (repo rel exec)
+  "Begin writing the regular file REL (executable when EXEC) a piece at a time."
+  (let ((wt (repo-wtb repo)))
+    (if (wtb-open-output wt)
+        (cons wt (funcall (wtb-open-output wt) rel exec))
+        (cons nil (list repo rel exec (make-array 4096 :element-type '(unsigned-byte 8)
+                                                       :adjustable t :fill-pointer 0))))))
+
+(defun wt-write-output (h buf start end)
+  (if (car h)
+      (funcall (wtb-write-output (car h)) (cdr h) buf start end)
+      (setf (fourth (cdr h)) (%collect-octets (fourth (cdr h)) buf start end)))
+  t)
+
+(defun wt-close-output (h &key abort)
+  (if (car h)
+      (funcall (wtb-close-output (car h)) (cdr h) abort)
+      (destructuring-bind (repo rel exec out) (cdr h)
+        (unless abort (wt-write-file repo rel (coerce out 'u8v) exec))))
+  t)
 
 ;;; ---- the host filesystem backend (the default) -----------------------------
 
@@ -213,6 +272,13 @@
                      (- (read-sequence buf s :start start :end end) start))
      :input-size   (lambda (s) (file-length s))
      :close-input  (lambda (s) (close s) t)
+     :open-output  (lambda (rel)
+                     (let ((p (full rel)))
+                       (ensure-directories-exist p)
+                       (open p :element-type '(unsigned-byte 8) :direction :output
+                               :if-exists :supersede :if-does-not-exist :create)))
+     :write-output (lambda (s buf start end) (write-sequence buf s :start start :end end) t)
+     :close-output (lambda (s abort) (close s :abort abort) t)
      :rename-file  (lambda (from to)
                      (let ((to (full to)))
                        (when (probe-file to) (delete-file to))
