@@ -20,7 +20,7 @@ here=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 export CL_SOURCE_REGISTRY="(:source-registry (:tree \"$here/../\") (:exclude \"vendor\") (:exclude \"deps\") :inherit-configuration)"
 
 fails=0
-for g in sha256 status-diff commit cabinet-backend pagetree-backend; do
+for g in sha256 status-diff commit cabinet-backend pagetree-backend fetch-http; do
   echo "### $g ###"
   if sbcl --dynamic-space-size 3072 --non-interactive \
           --eval '(require :asdf)' --load "$here/inspect/$g.lisp"; then

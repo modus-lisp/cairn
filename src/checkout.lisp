@@ -8,20 +8,27 @@
 
 (in-package #:cairn)
 
-(defun write-worktree (repo tree-sha prefix entries)
+(defun write-worktree (repo tree-sha prefix entries &optional have)
   "Recursively write the tree named TREE-SHA into REPO's working directory.
    PREFIX is the repo-relative path so far; ENTRIES is an adjustable vector
-   collecting the INDEX-ENTRY rows for each file written."
+   collecting the INDEX-ENTRY rows for each file written.  HAVE, if given, maps a
+   path to the old index's entry: a file whose entry already names this blob and
+   mode is left as it is and its entry kept, as git's checkout does -- so moving
+   a working tree from one commit to the next writes only what changed."
   (multiple-value-bind (type content) (read-object repo tree-sha)
     (declare (ignore type))
     (dolist (e (parse-tree content))
       (let* ((mode (tree-entry-mode e))
              (name (tree-entry-name e))
-             (relpath (if (string= prefix "") name (concatenate 'string prefix "/" name))))
+             (relpath (if (string= prefix "") name (concatenate 'string prefix "/" name)))
+             (old (and have (gethash relpath have))))
         (cond
           ((string= mode "40000")                        ; subtree
-           (write-worktree repo (tree-entry-sha e) relpath entries))
+           (write-worktree repo (tree-entry-sha e) relpath entries have))
           ((string= mode "160000"))                      ; submodule: no gitlink checkout
+          ((and old (string= (ie-sha old) (tree-entry-sha e))
+                (eql (ie-mode old) (tree-mode->index-mode mode)))
+           (vector-push-extend old entries))             ; unchanged since the old index
           ((string= mode "120000")                       ; symlink
            (multiple-value-bind (bt target) (read-object repo (tree-entry-sha e))
              (declare (ignore bt))
@@ -49,12 +56,16 @@
 (defun checkout (repo &optional (commit (head-commit repo)))
   "Materialise COMMIT (default HEAD) into REPO's working directory and write the
    matching .git/index.  Files tracked by the old index but absent from COMMIT
-   are removed, so a fast-forward leaves a clean tree.  Returns the file count."
+   are removed, so a fast-forward leaves a clean tree; a file the old index
+   already records with COMMIT's blob is not rewritten.  Returns the file count."
   (with-oid (repo)
   (let* ((tree (commit-tree (parse-commit (object-data repo commit))))
          (old (read-index repo))
+         (have (let ((h (make-hash-table :test 'equal)))
+                 (loop for e across old when (eql (ie-stage e) 0) do (setf (gethash (ie-path e) h) e))
+                 h))
          (entries (make-array 64 :adjustable t :fill-pointer 0)))
-    (write-worktree repo tree "" entries)
+    (write-worktree repo tree "" entries have)
     (let ((kept (make-hash-table :test 'equal)))
       (loop for e across entries do (setf (gethash (ie-path e) kept) t))
       (loop for e across old

@@ -40,12 +40,12 @@
           (local-haves repo)))
 
 (defun read-ref-file (repo refname)
-  (let ((p (merge-pathnames refname (repo-git-dir repo))))
-    (when (probe-file p) (string-trim '(#\Newline #\Space #\Return) (slurp-string p)))))
+  "REFNAME's sha, or NIL -- through the repository's store, so it works on any backend."
+  (resolve-ref repo refname))
 
 (defun remote-url (repo &optional (name "origin"))
   "The url of remote NAME from .git/config, or NIL."
-  (let ((cfg (slurp-string (merge-pathnames "config" (repo-git-dir repo))))
+  (let ((cfg (fs-read-string repo "config"))
         (marker (format nil "[remote \"~a\"]" name)))
     (when cfg
       (let ((start (search marker cfg)))
@@ -59,14 +59,6 @@
                              (subseq body (1+ eq) (position #\Newline body :start eq)))))))))))
 
 ;;; ---- transport ---------------------------------------------------------------
-
-(defun fetch-http (repo url)
-  (let ((base (smart-http-base url)))
-    (multiple-value-bind (remote-refs caps head-target) (discover-refs base)
-      (declare (ignore caps))
-      (multiple-value-bind (wants haves) (wants-and-haves repo remote-refs)
-        (values remote-refs head-target
-                (when wants (fetch-pack base wants haves)))))))
 
 (defun fetch-ssh (repo url identity)
   (let ((target (parse-ssh-url url)))
@@ -96,21 +88,39 @@
 
 (defun fetch (repo &key url identity)
   "Fetch new objects from URL (default: remote origin) and advance the
-   remote-tracking refs.  Returns the list of (branch . sha) updated."
+   remote-tracking refs.  Returns the list of (branch . sha) updated.
+   Over HTTP the pack streams into the store and is indexed there
+   (FETCH-PACK-INTO, as clone does), so a fetch of any size holds a window of
+   it in memory; over SSH it is read whole."
   (let ((url (or url (remote-url repo) (error "cairn: no url and no remote origin"))))
-    (multiple-value-bind (remote-refs head-target pack)
-        (if (ssh-url-p url) (fetch-ssh repo url identity) (fetch-http repo url))
-      (declare (ignore head-target))
-      (if (null pack)
-          (progn (format t "~&already up to date~%") '())
+    (if (ssh-url-p url)
+        (multiple-value-bind (remote-refs head-target pack) (fetch-ssh repo url identity)
+          (declare (ignore head-target))
           (with-store-transaction (repo)     ; new objects + ref moves land together
-            (format t "~&received packfile: ~d bytes~%" (length pack))
-            (multiple-value-bind (name count) (index-pack repo pack)
-              (format t "indexed ~a: ~d objects~%" name count))
-            (setf (repo-packs repo) :unloaded)   ; new pack on disk: drop the stale cache
-            (let ((updates (update-remote-refs repo remote-refs)))
-              (format t "updated ~d remote-tracking ref~:p~%" (length updates))
-              updates))))))
+            (if (null pack)
+                (format t "~&already up to date~%")
+                (progn
+                  (format t "~&received packfile: ~d bytes~%" (length pack))
+                  (multiple-value-bind (name count) (index-pack repo pack)
+                    (format t "indexed ~a: ~d objects~%" name count))
+                  (setf (repo-packs repo) :unloaded)))   ; new pack on disk: drop the stale cache
+            (%report-remote-refs (update-remote-refs repo remote-refs))))
+        (let ((base (smart-http-base url)))
+          (multiple-value-bind (remote-refs caps head-target) (discover-refs base)
+            (declare (ignore caps head-target))
+            (multiple-value-bind (wants haves) (wants-and-haves repo remote-refs)
+              (with-store-transaction (repo)
+                (if (null wants)
+                    (format t "~&already up to date~%")
+                    (multiple-value-bind (name count octets) (fetch-pack-into repo base wants haves)
+                      (format t "~&received packfile: ~d bytes~%indexed ~a: ~d objects~%"
+                              octets name count)
+                      (setf (repo-packs repo) :unloaded)))
+                (%report-remote-refs (update-remote-refs repo remote-refs)))))))))
+
+(defun %report-remote-refs (updates)
+  (format t "~&updated ~d remote-tracking ref~:p~%" (length updates))
+  updates)
 
 ;;; ---- pull (fetch + fast-forward) --------------------------------------------
 
